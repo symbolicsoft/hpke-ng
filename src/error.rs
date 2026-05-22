@@ -75,9 +75,8 @@ impl fmt::Display for HpkeError {
 			Self::InconsistentPsk => "PSK and PSK ID must both be empty or both non-empty",
 			Self::MissingPsk => "PSK is required by this mode",
 			Self::UnnecessaryPsk => "PSK is not used by this mode",
-			Self::PskTooShort => "PSK shorter than 32 bytes",
 			#[allow(deprecated)]
-			Self::InsecurePsk => "PSK shorter than 32 bytes",
+			Self::PskTooShort | Self::InsecurePsk => "PSK shorter than 32 bytes",
 			Self::ExportLengthExceeded => "requested length exceeds HKDF-Expand maximum",
 			Self::MessageLimitReached => "AEAD message limit reached",
 			Self::DeriveKeyPairError => "DeriveKeyPair rejection sampling exhausted",
