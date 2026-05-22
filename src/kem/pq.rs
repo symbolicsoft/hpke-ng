@@ -17,9 +17,9 @@ use crate::sealed::Sealed;
 // RNG compatibility shim: rand_core 0.9 -> rand_core 0.10
 // ---------------------------------------------------------------------------
 //
-// x-wing depends on `rand_core 0.10`, which has different trait definitions
+// X-wing depends on `rand_core 0.10`, which has different trait definitions
 // than the `rand_core 0.9` used by the rest of hpke-ng. This wrapper bridges
-// the two so that our callers' RNGs (0.9 traits) can be passed into x-wing's
+// the two so that our callers' RNGs (0.9 traits) can be passed into X-wing's
 // API (0.10 traits).
 
 struct RngCompat10<'a, R: RngCore + CryptoRng>(pub(crate) &'a mut R);

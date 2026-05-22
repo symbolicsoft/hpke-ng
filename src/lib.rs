@@ -129,7 +129,7 @@ fn verify_psk_inputs(mode: u8, psk: &[u8], psk_id: &[u8]) -> Result<(), HpkeErro
 		return Err(HpkeError::MissingPsk);
 	}
 	if got_psk && psk.len() < 32 {
-		return Err(HpkeError::InsecurePsk);
+		return Err(HpkeError::PskTooShort);
 	}
 	Ok(())
 }
@@ -196,7 +196,7 @@ mod ks_tests {
 			(modes::PSK, &[0u8; 32], b"", Err(InconsistentPsk)),
 			(modes::PSK, b"", b"", Err(MissingPsk)),
 			(modes::BASE, &[0u8; 32], b"id", Err(UnnecessaryPsk)),
-			(modes::PSK, b"too short", b"id", Err(InsecurePsk)),
+			(modes::PSK, b"too short", b"id", Err(PskTooShort)),
 			(modes::BASE, b"", b"", Ok(())),
 			(modes::PSK, &[0u8; 32], b"id", Ok(())),
 		];
@@ -234,7 +234,7 @@ impl<K: Kem, F: Kdf, A: Aead> Hpke<K, F, A> {
 	///
 	/// `psk` MUST be at least 32 bytes of high-entropy random data. Length is
 	/// enforced; entropy is the caller's responsibility — see
-	/// [`HpkeError::InsecurePsk`].
+	/// [`HpkeError::PskTooShort`].
 	pub fn setup_sender_psk<R: CryptoRng + RngCore>(
 		rng: &mut R,
 		pk_r: &K::PublicKey,
@@ -251,7 +251,7 @@ impl<K: Kem, F: Kdf, A: Aead> Hpke<K, F, A> {
 	///
 	/// `psk` MUST be at least 32 bytes of high-entropy random data. Length is
 	/// enforced; entropy is the caller's responsibility — see
-	/// [`HpkeError::InsecurePsk`].
+	/// [`HpkeError::PskTooShort`].
 	pub fn setup_receiver_psk(
 		enc: &K::EncappedKey,
 		sk_r: &K::PrivateKey,
@@ -528,7 +528,7 @@ impl<K: AuthKem, F: Kdf, A: Aead> Hpke<K, F, A> {
 	///
 	/// `psk` MUST be at least 32 bytes of high-entropy random data. Length is
 	/// enforced; entropy is the caller's responsibility — see
-	/// [`HpkeError::InsecurePsk`].
+	/// [`HpkeError::PskTooShort`].
 	pub fn setup_sender_auth_psk<R: CryptoRng + RngCore>(
 		rng: &mut R,
 		pk_r: &K::PublicKey,
@@ -546,7 +546,7 @@ impl<K: AuthKem, F: Kdf, A: Aead> Hpke<K, F, A> {
 	///
 	/// `psk` MUST be at least 32 bytes of high-entropy random data. Length is
 	/// enforced; entropy is the caller's responsibility — see
-	/// [`HpkeError::InsecurePsk`].
+	/// [`HpkeError::PskTooShort`].
 	pub fn setup_receiver_auth_psk(
 		enc: &K::EncappedKey,
 		sk_r: &K::PrivateKey,

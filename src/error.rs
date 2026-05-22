@@ -47,6 +47,9 @@ pub enum HpkeError {
 	/// caller is responsible for supplying high-entropy material. Do **not**
 	/// pass passwords or other low-entropy strings as a PSK without first
 	/// running them through a slow password-hashing KDF (e.g. Argon2).
+	PskTooShort,
+	/// Deprecated: use [`HpkeError::PskTooShort`] instead.
+	#[deprecated(since = "0.1.0", note = "use `PskTooShort` instead")]
 	InsecurePsk,
 	/// Requested KDF expansion would exceed `255 * Nh` (RFC 5869 §2.3).
 	ExportLengthExceeded,
@@ -72,6 +75,8 @@ impl fmt::Display for HpkeError {
 			Self::InconsistentPsk => "PSK and PSK ID must both be empty or both non-empty",
 			Self::MissingPsk => "PSK is required by this mode",
 			Self::UnnecessaryPsk => "PSK is not used by this mode",
+			Self::PskTooShort => "PSK shorter than 32 bytes",
+			#[allow(deprecated)]
 			Self::InsecurePsk => "PSK shorter than 32 bytes",
 			Self::ExportLengthExceeded => "requested length exceeds HKDF-Expand maximum",
 			Self::MessageLimitReached => "AEAD message limit reached",
@@ -92,7 +97,7 @@ mod tests {
 	fn display_is_informative() {
 		assert_eq!(format!("{}", HpkeError::OpenError), "AEAD open failed");
 		assert_eq!(
-			format!("{}", HpkeError::InsecurePsk),
+			format!("{}", HpkeError::PskTooShort),
 			"PSK shorter than 32 bytes"
 		);
 	}

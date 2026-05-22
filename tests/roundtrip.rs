@@ -60,7 +60,7 @@ macro_rules! roundtrip_psk_sealing {
 			let too_short = [0u8; 16];
 			assert_eq!(
 				Suite::seal_psk(&mut rng, &pk_r, b"i", b"a", b"hi", &too_short, b"id").unwrap_err(),
-				HpkeError::InsecurePsk,
+				HpkeError::PskTooShort,
 			);
 		}
 	};
