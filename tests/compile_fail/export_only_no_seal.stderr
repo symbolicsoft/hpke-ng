@@ -1,0 +1,13 @@
+error[E0599]: the function or associated item `seal_base` exists for struct `hpke_ng::Hpke<DhKem<X25519, hpke_ng::HkdfSha256>, hpke_ng::HkdfSha256, hpke_ng::ExportOnly>`, but its trait bounds were not satisfied
+ --> tests/compile_fail/export_only_no_seal.rs:9:73
+  |
+9 |     let (enc, ct) = Hpke::<DhKemX25519HkdfSha256, HkdfSha256, ExportOnly>::seal_base(
+  |                                                                            ^^^^^^^^^ function or associated item cannot be called due to unsatisfied trait bounds
+  |
+ ::: src/aead.rs
+  |
+  | pub struct ExportOnly;
+  | --------------------- doesn't satisfy `hpke_ng::ExportOnly: SealingAead`
+  |
+  = note: the following trait bounds were not satisfied:
+          `hpke_ng::ExportOnly: SealingAead`

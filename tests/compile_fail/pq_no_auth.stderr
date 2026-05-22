@@ -1,0 +1,13 @@
+error[E0599]: the function or associated item `seal_auth` exists for struct `hpke_ng::Hpke<hpke_ng::MlKem768, hpke_ng::HkdfSha256, hpke_ng::ChaCha20Poly1305>`, but its trait bounds were not satisfied
+  --> tests/compile_fail/pq_no_auth.rs:10:66
+   |
+10 |     let (enc, ct) = Hpke::<MlKem768, HkdfSha256, ChaCha20Poly1305>::seal_auth(
+   |                                                                     ^^^^^^^^^ function or associated item cannot be called due to unsatisfied trait bounds
+   |
+  ::: src/kem/pq.rs
+   |
+   |         pub struct $marker;
+   |         ------------------- doesn't satisfy `hpke_ng::MlKem768: AuthKem`
+   |
+   = note: the following trait bounds were not satisfied:
+           `hpke_ng::MlKem768: AuthKem`

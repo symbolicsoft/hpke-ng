@@ -1,0 +1,5 @@
+error[E0599]: no method named `clone` found for struct `hpke_ng::Context<K, F, A>` in the current scope
+  --> tests/compile_fail/context_not_clone.rs:13:14
+   |
+13 |     let _ = ctx.clone();
+   |                 ^^^^^ method not found in `hpke_ng::Context<DhKem<X25519, hpke_ng::HkdfSha256>, hpke_ng::HkdfSha256, hpke_ng::ChaCha20Poly1305>`
