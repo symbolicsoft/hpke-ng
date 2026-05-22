@@ -164,6 +164,7 @@ impl<K: Kem, F: Kdf, A: SealingAead> Context<K, F, A> {
 mod tests {
 	use super::*;
 	use crate::{ChaCha20Poly1305, DhKemX25519HkdfSha256, HkdfSha256};
+	use std::collections::HashSet;
 
 	type Ctx = Context<DhKemX25519HkdfSha256, HkdfSha256, ChaCha20Poly1305>;
 
@@ -189,6 +190,29 @@ mod tests {
 			assert_eq!(recovered, pt.as_bytes());
 		}
 		assert_eq!(sender.sequence_number(), 4);
+	}
+
+	#[test]
+	fn sequential_seal_open_no_nonce_reuse() {
+		let key = vec![0x42u8; 32];
+		let base_nonce = vec![0x77u8; 12];
+		let exporter_secret = vec![0u8; 32];
+		let mut sender: Ctx =
+			Context::new(key.clone(), base_nonce.clone(), exporter_secret.clone()).unwrap();
+		let mut receiver: Ctx = Context::new(key, base_nonce, exporter_secret).unwrap();
+
+		let mut seen_ciphertexts = HashSet::new();
+
+		for _ in 0..10_000 {
+			let ct = sender.seal(b"aad", b"hello").unwrap();
+
+			// if nonce reused, same pt + same key + same nonce = same ct
+			assert!(seen_ciphertexts.insert(ct.clone()));
+
+			receiver.open(b"aad", &ct).unwrap();
+		}
+
+		assert_eq!(seen_ciphertexts.len(), 10_000);
 	}
 
 	#[test]
