@@ -166,7 +166,7 @@ fn key_schedule_inner<K: Kem, F: Kdf, A: Aead>(
 ) -> Result<Context<K, F, A>, HpkeError> {
 	verify_psk_inputs(mode, psk, psk_id)?;
 	let suite = ciphersuite::<K, F, A>();
-	let psk_id_hash = labeled_extract::<F>(&[], &suite, b"psk_id_hash", psk_id);
+	let psk_id_hash = Zeroizing::new(labeled_extract::<F>(&[], &suite, b"psk_id_hash", psk_id));
 	let info_hash = labeled_extract::<F>(&[], &suite, b"info_hash", info);
 
 	let mode_arr = [mode];
@@ -181,7 +181,7 @@ fn key_schedule_inner<K: Kem, F: Kdf, A: Aead>(
 	let exporter_secret =
 		labeled_expand_pieces::<F>(&secret, &suite, b"exp", &ks_pieces, F::HASH_LEN)?;
 
-	Context::new(key, base_nonce, exporter_secret)
+	Context::new(key, &base_nonce, exporter_secret)
 }
 
 #[cfg(test)]

@@ -479,10 +479,9 @@ impl<D: DiffieHellman, H: Kdf> AuthKem for DhKem<D, H> {
 		let pk_e = D::pk_from_bytes(enc.as_ref())?;
 		let dh1 = Zeroizing::new(D::dh(&sk_r.sk, &pk_e)?);
 		let dh2 = Zeroizing::new(D::dh(&sk_r.sk, &pk_s.0)?);
-		let pk_sender = D::pk_to_bytes(&pk_s.0);
 		Ok(DhSharedSecret(extract_and_expand_pieces::<D, H>(
 			&[&dh1, &dh2],
-			&[enc.as_ref(), &sk_r.pk_bytes, &pk_sender],
+			&[enc.as_ref(), &sk_r.pk_bytes, pk_s.as_ref()],
 		)?))
 	}
 }
@@ -495,16 +494,15 @@ fn encap_with<D: DiffieHellman, H: Kdf, R: CryptoRng + RngCore>(
 	let (sk_e, pk_e) = D::generate(rng);
 	let dh1 = Zeroizing::new(D::dh(&sk_e, &pk_r.0)?);
 	let enc = D::pk_to_bytes(&pk_e);
-	let pk_recipient = D::pk_to_bytes(&pk_r.0);
 
 	let ss = match sk_sender {
-		None => extract_and_expand::<D, H>(&dh1, &[&enc, &pk_recipient])?,
+		None => extract_and_expand::<D, H>(&dh1, &[&enc, pk_r.as_ref()])?,
 		Some(sk_s) => {
 			let dh2 = Zeroizing::new(D::dh(&sk_s.sk, &pk_r.0)?);
 			// Cached sender public-key bytes — no `sk_to_pk` round trip.
 			extract_and_expand_pieces::<D, H>(
 				&[&dh1, &dh2],
-				&[&enc, &pk_recipient, &sk_s.pk_bytes],
+				&[&enc, pk_r.as_ref(), &sk_s.pk_bytes],
 			)?
 		}
 	};

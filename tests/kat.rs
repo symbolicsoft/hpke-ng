@@ -109,7 +109,7 @@ where
 	);
 
 	let ikm_e = hex_decode(&v.ikmE);
-	let (_sk_e, pk_e) = K::derive_key_pair(&ikm_e).expect("derive E");
+	let (_, pk_e) = K::derive_key_pair(&ikm_e).expect("derive E");
 	assert_eq!(
 		<K as Kem>::pk_to_bytes(&pk_e),
 		hex_decode(&v.pkEm),
