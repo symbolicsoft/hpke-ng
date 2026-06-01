@@ -382,7 +382,7 @@ macro_rules! ml_kem_variant {
 				// Domain separation across parameter sets is provided by the
 				// KEM itself: KeyGen_internal mixes `k` (3 vs 4) into G(d || k).
 				if ikm.len() != 64 {
-					return Err(HpkeError::DeriveKeyPairError);
+					return Err(HpkeError::InvalidKeyMaterial);
 				}
 				let mut seed = [0u8; 64];
 				seed.copy_from_slice(ikm);
@@ -582,7 +582,7 @@ mod tests {
 				for bad_len in [0usize, 32, 63, 65] {
 					assert!(matches!(
 						<$kem>::derive_key_pair(&vec![0u8; bad_len]),
-						Err(HpkeError::DeriveKeyPairError)
+						Err(HpkeError::InvalidKeyMaterial)
 					));
 				}
 			}
