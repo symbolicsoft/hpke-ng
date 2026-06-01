@@ -157,6 +157,36 @@ pub fn key_schedule<K: Kem, F: Kdf, A: Aead>(
 	key_schedule_inner::<K, F, A>(mode, shared_secret, info, psk, psk_id)
 }
 
+/// Fast-path key schedule for Base and Auth modes, where `psk` and `psk_id` are
+/// always empty. Skips PSK input validation and hardcodes both to &[], avoiding
+/// a `verify_psk_inputs` call and making the empty-input assumptions structurally
+/// explicit rather than relying on callers passing the right literals.
+fn key_schedule_base<K: Kem, F: Kdf, A: Aead>(
+	mode: u8,
+	shared_secret: &[u8],
+	info: &[u8],
+) -> Result<Context<K, F, A>, HpkeError> {
+	let suite = ciphersuite::<K, F, A>();
+	let psk_id_hash = Zeroizing::new(labeled_extract::<F>(&[], &suite, b"psk_id_hash", &[]));
+	let info_hash = labeled_extract::<F>(&[], &suite, b"info_hash", info);
+	let mode_arr = [mode];
+	// `ks_context = mode || psk_id_hash || info_hash`. Fed piecewise into
+	// each `expand_multi_info` call instead of allocating a flat `Vec`.
+	let ks_pieces: [&[u8]; 3] = [&mode_arr, &psk_id_hash, &info_hash];
+
+	let secret = Zeroizing::new(labeled_extract::<F>(shared_secret, &suite, b"secret", &[]));
+	let key = labeled_expand_pieces::<F>(&secret, &suite, b"key", &ks_pieces, A::KEY_LEN)?;
+	let base_nonce =
+		labeled_expand_pieces::<F>(&secret, &suite, b"base_nonce", &ks_pieces, A::NONCE_LEN)?;
+	let exporter_secret =
+		labeled_expand_pieces::<F>(&secret, &suite, b"exp", &ks_pieces, F::HASH_LEN)?;
+
+	Context::new(key, &base_nonce, exporter_secret)
+}
+
+/// General key schedule for PSK and `AuthPSK` modes. Validates that `psk` and
+/// `psk_id` are consistent and well-formed before deriving the context.
+/// Base and Auth mode callers should use `key_schedule_base` instead.
 fn key_schedule_inner<K: Kem, F: Kdf, A: Aead>(
 	mode: u8,
 	shared_secret: &[u8],
@@ -216,7 +246,7 @@ impl<K: Kem, F: Kdf, A: Aead> Hpke<K, F, A> {
 		info: &[u8],
 	) -> Result<(K::EncappedKey, SenderContext<K, F, A>), HpkeError> {
 		let (ss, enc) = K::encap(rng, pk_r)?;
-		let ctx = key_schedule::<K, F, A>(modes::BASE, ss.as_ref(), info, &[], &[])?;
+		let ctx = key_schedule_base::<K, F, A>(modes::BASE, ss.as_ref(), info)?;
 		Ok((enc, SenderContext::new(ctx)))
 	}
 
@@ -227,7 +257,7 @@ impl<K: Kem, F: Kdf, A: Aead> Hpke<K, F, A> {
 		info: &[u8],
 	) -> Result<ReceiverContext<K, F, A>, HpkeError> {
 		let ss = K::decap(enc, sk_r)?;
-		key_schedule::<K, F, A>(modes::BASE, ss.as_ref(), info, &[], &[]).map(ReceiverContext::new)
+		key_schedule_base::<K, F, A>(modes::BASE, ss.as_ref(), info).map(ReceiverContext::new)
 	}
 
 	/// `SetupPSKS` (RFC 9180 §5.1.2).
@@ -510,7 +540,7 @@ impl<K: AuthKem, F: Kdf, A: Aead> Hpke<K, F, A> {
 		sk_s: &K::PrivateKey,
 	) -> Result<(K::EncappedKey, SenderContext<K, F, A>), HpkeError> {
 		let (ss, enc) = K::auth_encap(rng, pk_r, sk_s)?;
-		let ctx = key_schedule::<K, F, A>(modes::AUTH, ss.as_ref(), info, &[], &[])?;
+		let ctx = key_schedule_base::<K, F, A>(modes::AUTH, ss.as_ref(), info)?;
 		Ok((enc, SenderContext::new(ctx)))
 	}
 
@@ -522,7 +552,7 @@ impl<K: AuthKem, F: Kdf, A: Aead> Hpke<K, F, A> {
 		pk_s: &K::PublicKey,
 	) -> Result<ReceiverContext<K, F, A>, HpkeError> {
 		let ss = K::auth_decap(enc, sk_r, pk_s)?;
-		key_schedule::<K, F, A>(modes::AUTH, ss.as_ref(), info, &[], &[]).map(ReceiverContext::new)
+		key_schedule_base::<K, F, A>(modes::AUTH, ss.as_ref(), info).map(ReceiverContext::new)
 	}
 
 	/// `SetupAuthPSKS` (RFC 9180 §5.1.4).
