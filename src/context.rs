@@ -70,7 +70,11 @@ impl<K: Kem, F: Kdf, A: Aead> Context<K, F, A> {
 
 	/// `Context.Export` (RFC 9180 §5.3).
 	#[inline]
-	pub fn export(&self, exporter_context: &[u8], length: usize) -> Result<Vec<u8>, HpkeError> {
+  pub(crate) fn export(
+		&self,
+		exporter_context: &[u8],
+		length: usize,
+	) -> Result<Vec<u8>, HpkeError> {
 		let suite = ciphersuite::<K, F, A>();
 		labeled_expand::<F>(
 			&self.exporter_secret,
@@ -139,7 +143,7 @@ impl<K: Kem, F: Kdf, A: SealingAead> Context<K, F, A> {
 	/// encrypt at all makes nonce-reuse structurally impossible regardless of
 	/// caller behaviour.
 	#[inline]
-	pub fn seal(&mut self, aad: &[u8], pt: &[u8]) -> Result<Vec<u8>, HpkeError> {
+  pub(crate) fn seal(&mut self, aad: &[u8], pt: &[u8]) -> Result<Vec<u8>, HpkeError> {
 		if self.seq == u64::MAX {
 			return Err(HpkeError::MessageLimitReached);
 		}
@@ -155,7 +159,7 @@ impl<K: Kem, F: Kdf, A: SealingAead> Context<K, F, A> {
 	/// rather than producing a recoverable plaintext that would leave the
 	/// receiver in a state where the next `open` reuses the same nonce.
 	#[inline]
-	pub fn open(&mut self, aad: &[u8], ct: &[u8]) -> Result<Vec<u8>, HpkeError> {
+  pub(crate) fn open(&mut self, aad: &[u8], ct: &[u8]) -> Result<Vec<u8>, HpkeError> {
 		if self.seq == u64::MAX {
 			return Err(HpkeError::MessageLimitReached);
 		}
@@ -163,6 +167,102 @@ impl<K: Kem, F: Kdf, A: SealingAead> Context<K, F, A> {
 		let pt = A::open(&self.cipher, &nonce[..A::NONCE_LEN], aad, ct)?;
 		self.seq += 1;
 		Ok(pt)
+	}
+}
+
+/// Sender-side HPKE context — RFC 9180 §5.2 `ContextS`.
+///
+/// Produced by the `setup_sender_*` functions. Exposes [`seal`](Self::seal)
+/// and [`export`](Self::export), but deliberately **not** `open`: an HPKE
+/// context is one-directional. A sender and the matching receiver derive the
+/// identical `(key, base_nonce)`, so if a single context could both seal and
+/// open, using one session in both directions would reuse a `(key, nonce)`
+/// pair — catastrophic for the AEAD. Splitting sender and receiver into
+/// distinct types makes that misuse a compile error.
+///
+/// For a bidirectional channel, run a separate HPKE setup per direction, or
+/// derive independent per-direction keys via [`export`](Self::export)
+/// (RFC 9180 §9.8).
+///
+/// **Not** `Clone`: forking the `(key, base_nonce, seq)` state would reopen the
+/// nonce-reuse footgun.
+pub struct SenderContext<K: Kem, F: Kdf, A: Aead>(Context<K, F, A>);
+
+/// Receiver-side HPKE context — RFC 9180 §5.2 `ContextR`.
+///
+/// Produced by the `setup_receiver_*` functions. Exposes [`open`](Self::open)
+/// and [`export`](Self::export), but deliberately **not** `seal`, for the same
+/// one-directional reason as [`SenderContext`]. **Not** `Clone`.
+pub struct ReceiverContext<K: Kem, F: Kdf, A: Aead>(Context<K, F, A>);
+
+impl<K: Kem, F: Kdf, A: Aead> SenderContext<K, F, A> {
+	pub(crate) fn new(inner: Context<K, F, A>) -> Self {
+		Self(inner)
+	}
+
+	/// Test/KAT/differential-only: wrap a raw key-schedule [`Context`] as a
+	/// sender context (the harnesses build contexts from injected shared
+	/// secrets rather than through `setup_sender_*`).
+	#[cfg(any(test, feature = "kat-internals", feature = "differential"))]
+	#[doc(hidden)]
+	#[must_use]
+	pub fn from_context(inner: Context<K, F, A>) -> Self {
+		Self(inner)
+	}
+
+	/// `Context.Export` (RFC 9180 §5.3).
+	pub fn export(&self, exporter_context: &[u8], length: usize) -> Result<Vec<u8>, HpkeError> {
+		self.0.export(exporter_context, length)
+	}
+}
+
+impl<K: Kem, F: Kdf, A: SealingAead> SenderContext<K, F, A> {
+	/// `Context.Seal(aad, pt)` (RFC 9180 §5.2).
+	pub fn seal(&mut self, aad: &[u8], pt: &[u8]) -> Result<Vec<u8>, HpkeError> {
+		self.0.seal(aad, pt)
+	}
+}
+
+impl<K: Kem, F: Kdf, A: Aead> ReceiverContext<K, F, A> {
+	pub(crate) fn new(inner: Context<K, F, A>) -> Self {
+		Self(inner)
+	}
+
+	/// `Context.Export` (RFC 9180 §5.3).
+	pub fn export(&self, exporter_context: &[u8], length: usize) -> Result<Vec<u8>, HpkeError> {
+		self.0.export(exporter_context, length)
+	}
+}
+
+impl<K: Kem, F: Kdf, A: SealingAead> ReceiverContext<K, F, A> {
+	/// `Context.Open(aad, ct)` (RFC 9180 §5.2).
+	pub fn open(&mut self, aad: &[u8], ct: &[u8]) -> Result<Vec<u8>, HpkeError> {
+		self.0.open(aad, ct)
+	}
+}
+
+/// Test/KAT/differential accessors that delegate to the inner [`Context`].
+#[cfg(any(test, feature = "kat-internals", feature = "differential"))]
+impl<K: Kem, F: Kdf, A: Aead> ReceiverContext<K, F, A> {
+	/// Test-only: expose the AEAD key.
+	#[must_use]
+	pub fn key(&self) -> &[u8] {
+		self.0.key()
+	}
+	/// Test-only: expose the base nonce.
+	#[must_use]
+	pub fn nonce(&self) -> &[u8] {
+		self.0.nonce()
+	}
+	/// Test-only: expose the exporter secret.
+	#[must_use]
+	pub fn exporter_secret(&self) -> &[u8] {
+		self.0.exporter_secret()
+	}
+	/// Test-only: expose the sequence number.
+	#[must_use]
+	pub fn sequence_number(&self) -> u64 {
+		self.0.sequence_number()
 	}
 }
 

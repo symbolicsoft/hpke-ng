@@ -65,7 +65,7 @@ pub use kem::pq::{MlKem768, MlKem1024, XWingDraft06};
 
 mod context;
 
-pub use context::Context;
+pub use context::{Context, ReceiverContext, SenderContext};
 
 use alloc::vec::Vec;
 use core::marker::PhantomData;
@@ -244,10 +244,10 @@ impl<K: Kem, F: Kdf, A: Aead> Hpke<K, F, A> {
 		rng: &mut R,
 		pk_r: &K::PublicKey,
 		info: &[u8],
-	) -> Result<(K::EncappedKey, Context<K, F, A>), HpkeError> {
+	) -> Result<(K::EncappedKey, SenderContext<K, F, A>), HpkeError> {
 		let (ss, enc) = K::encap(rng, pk_r)?;
 		let ctx = key_schedule_base::<K, F, A>(modes::BASE, ss.as_ref(), info)?;
-		Ok((enc, ctx))
+		Ok((enc, SenderContext::new(ctx)))
 	}
 
 	/// `SetupBaseR` (RFC 9180 §5.1.1).
@@ -255,9 +255,9 @@ impl<K: Kem, F: Kdf, A: Aead> Hpke<K, F, A> {
 		enc: &K::EncappedKey,
 		sk_r: &K::PrivateKey,
 		info: &[u8],
-	) -> Result<Context<K, F, A>, HpkeError> {
+	) -> Result<ReceiverContext<K, F, A>, HpkeError> {
 		let ss = K::decap(enc, sk_r)?;
-		key_schedule_base::<K, F, A>(modes::BASE, ss.as_ref(), info)
+		key_schedule_base::<K, F, A>(modes::BASE, ss.as_ref(), info).map(ReceiverContext::new)
 	}
 
 	/// `SetupPSKS` (RFC 9180 §5.1.2).
@@ -271,10 +271,10 @@ impl<K: Kem, F: Kdf, A: Aead> Hpke<K, F, A> {
 		info: &[u8],
 		psk: &[u8],
 		psk_id: &[u8],
-	) -> Result<(K::EncappedKey, Context<K, F, A>), HpkeError> {
+	) -> Result<(K::EncappedKey, SenderContext<K, F, A>), HpkeError> {
 		let (ss, enc) = K::encap(rng, pk_r)?;
 		let ctx = key_schedule::<K, F, A>(modes::PSK, ss.as_ref(), info, psk, psk_id)?;
-		Ok((enc, ctx))
+		Ok((enc, SenderContext::new(ctx)))
 	}
 
 	/// `SetupPSKR` (RFC 9180 §5.1.2).
@@ -288,9 +288,10 @@ impl<K: Kem, F: Kdf, A: Aead> Hpke<K, F, A> {
 		info: &[u8],
 		psk: &[u8],
 		psk_id: &[u8],
-	) -> Result<Context<K, F, A>, HpkeError> {
+	) -> Result<ReceiverContext<K, F, A>, HpkeError> {
 		let ss = K::decap(enc, sk_r)?;
 		key_schedule::<K, F, A>(modes::PSK, ss.as_ref(), info, psk, psk_id)
+			.map(ReceiverContext::new)
 	}
 }
 
@@ -537,10 +538,10 @@ impl<K: AuthKem, F: Kdf, A: Aead> Hpke<K, F, A> {
 		pk_r: &K::PublicKey,
 		info: &[u8],
 		sk_s: &K::PrivateKey,
-	) -> Result<(K::EncappedKey, Context<K, F, A>), HpkeError> {
+	) -> Result<(K::EncappedKey, SenderContext<K, F, A>), HpkeError> {
 		let (ss, enc) = K::auth_encap(rng, pk_r, sk_s)?;
 		let ctx = key_schedule_base::<K, F, A>(modes::AUTH, ss.as_ref(), info)?;
-		Ok((enc, ctx))
+		Ok((enc, SenderContext::new(ctx)))
 	}
 
 	/// `SetupAuthR` (RFC 9180 §5.1.3).
@@ -549,9 +550,9 @@ impl<K: AuthKem, F: Kdf, A: Aead> Hpke<K, F, A> {
 		sk_r: &K::PrivateKey,
 		info: &[u8],
 		pk_s: &K::PublicKey,
-	) -> Result<Context<K, F, A>, HpkeError> {
+	) -> Result<ReceiverContext<K, F, A>, HpkeError> {
 		let ss = K::auth_decap(enc, sk_r, pk_s)?;
-		key_schedule_base::<K, F, A>(modes::AUTH, ss.as_ref(), info)
+		key_schedule_base::<K, F, A>(modes::AUTH, ss.as_ref(), info).map(ReceiverContext::new)
 	}
 
 	/// `SetupAuthPSKS` (RFC 9180 §5.1.4).
@@ -566,10 +567,10 @@ impl<K: AuthKem, F: Kdf, A: Aead> Hpke<K, F, A> {
 		psk: &[u8],
 		psk_id: &[u8],
 		sk_s: &K::PrivateKey,
-	) -> Result<(K::EncappedKey, Context<K, F, A>), HpkeError> {
+	) -> Result<(K::EncappedKey, SenderContext<K, F, A>), HpkeError> {
 		let (ss, enc) = K::auth_encap(rng, pk_r, sk_s)?;
 		let ctx = key_schedule::<K, F, A>(modes::AUTH_PSK, ss.as_ref(), info, psk, psk_id)?;
-		Ok((enc, ctx))
+		Ok((enc, SenderContext::new(ctx)))
 	}
 
 	/// `SetupAuthPSKR` (RFC 9180 §5.1.4).
@@ -584,9 +585,10 @@ impl<K: AuthKem, F: Kdf, A: Aead> Hpke<K, F, A> {
 		psk: &[u8],
 		psk_id: &[u8],
 		pk_s: &K::PublicKey,
-	) -> Result<Context<K, F, A>, HpkeError> {
+	) -> Result<ReceiverContext<K, F, A>, HpkeError> {
 		let ss = K::auth_decap(enc, sk_r, pk_s)?;
 		key_schedule::<K, F, A>(modes::AUTH_PSK, ss.as_ref(), info, psk, psk_id)
+			.map(ReceiverContext::new)
 	}
 }
 
