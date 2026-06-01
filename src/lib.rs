@@ -157,9 +157,9 @@ pub fn key_schedule<K: Kem, F: Kdf, A: Aead>(
 	key_schedule_inner::<K, F, A>(mode, shared_secret, info, psk, psk_id)
 }
 
-/// Fast-path key schedule for Base and Auth modes, where psk and psk_id are
+/// Fast-path key schedule for Base and Auth modes, where `psk` and `psk_id` are
 /// always empty. Skips PSK input validation and hardcodes both to &[], avoiding
-/// a verify_psk_inputs call and making the empty-input assumptions structurally
+/// a `verify_psk_inputs` call and making the empty-input assumptions structurally
 /// explicit rather than relying on callers passing the right literals.
 fn key_schedule_base<K: Kem, F: Kdf, A: Aead>(
 	mode: u8,
@@ -184,9 +184,9 @@ fn key_schedule_base<K: Kem, F: Kdf, A: Aead>(
 	Context::new(key, &base_nonce, exporter_secret)
 }
 
-/// General key schedule for PSK and AuthPSK modes. Validates that psk and
-/// psk_id are consistent and well-formed before deriving the context.
-/// Base and Auth mode callers should use key_schedule_base instead.
+/// General key schedule for PSK and `AuthPSK` modes. Validates that `psk` and
+/// `psk_id` are consistent and well-formed before deriving the context.
+/// Base and Auth mode callers should use `key_schedule_base` instead.
 fn key_schedule_inner<K: Kem, F: Kdf, A: Aead>(
 	mode: u8,
 	shared_secret: &[u8],

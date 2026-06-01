@@ -70,7 +70,7 @@ impl<K: Kem, F: Kdf, A: Aead> Context<K, F, A> {
 
 	/// `Context.Export` (RFC 9180 §5.3).
 	#[inline]
-  pub(crate) fn export(
+	pub(crate) fn export(
 		&self,
 		exporter_context: &[u8],
 		length: usize,
@@ -143,7 +143,7 @@ impl<K: Kem, F: Kdf, A: SealingAead> Context<K, F, A> {
 	/// encrypt at all makes nonce-reuse structurally impossible regardless of
 	/// caller behaviour.
 	#[inline]
-  pub(crate) fn seal(&mut self, aad: &[u8], pt: &[u8]) -> Result<Vec<u8>, HpkeError> {
+	pub(crate) fn seal(&mut self, aad: &[u8], pt: &[u8]) -> Result<Vec<u8>, HpkeError> {
 		if self.seq == u64::MAX {
 			return Err(HpkeError::MessageLimitReached);
 		}
@@ -159,7 +159,7 @@ impl<K: Kem, F: Kdf, A: SealingAead> Context<K, F, A> {
 	/// rather than producing a recoverable plaintext that would leave the
 	/// receiver in a state where the next `open` reuses the same nonce.
 	#[inline]
-  pub(crate) fn open(&mut self, aad: &[u8], ct: &[u8]) -> Result<Vec<u8>, HpkeError> {
+	pub(crate) fn open(&mut self, aad: &[u8], ct: &[u8]) -> Result<Vec<u8>, HpkeError> {
 		if self.seq == u64::MAX {
 			return Err(HpkeError::MessageLimitReached);
 		}
@@ -279,7 +279,7 @@ mod tests {
 		let base_nonce = vec![0x77u8; 12];
 		let exporter_secret = vec![0u8; 32];
 		let mut sender: Ctx =
-			Context::new(key.clone(), &base_nonce.clone(), exporter_secret.clone()).unwrap();
+			Context::new(key.clone(), base_nonce.clone(), exporter_secret.clone()).unwrap();
 		let mut receiver: Ctx = Context::new(key, &base_nonce, exporter_secret).unwrap();
 
 		let ct = sender.seal(b"aad", b"message").unwrap();
