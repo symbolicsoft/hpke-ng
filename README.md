@@ -65,9 +65,45 @@ The design takes one position on each: **no provider abstraction, no owned RNG, 
 
 ## Performance
 
-Across **137 head-to-head benchmarks** against the two major Rust HPKE libraries — `hpke-rs` and `rust-hpke` — `hpke-ng` lands **99 wins, 20 ties, 18 losses** (a cell is a "tie" when the two medians fall within ±2% of each other). Broken out: vs `hpke-rs` (76 cells) it's **61W / 13T / 2L**; vs `rust-hpke` (61 cells; no standalone ML-KEM-768/ML-KEM-1024, no secp256k1 support) it's **38W / 7T / 16L**. The largest deltas are on the post-quantum decap path — ML-KEM-768 and ML-KEM-1024 land **54–56% faster**, X-Wing decap **38% faster** — because `hpke-ng` caches the expanded FIPS 203 decapsulation key in the `PrivateKey` while `hpke-rs` rebuilds it from the seed on every `setup_receiver`. The same idea applied to classical KEMs — caching the recipient's serialized public key alongside the secret — eliminates a redundant base-point scalar multiplication on every decap, lifting **X25519 decap to −44% vs `hpke-rs` / −51% vs `rust-hpke`**, ML-KEM encap to **33–41%**, X-Wing encap to **15% vs `hpke-rs`** and to roughly parity vs `rust-hpke`. X-Wing `setup_receiver` is also roughly equivalent to `rust-hpke`'s (which wraps raw decap in full HPKE setup). Single-shot open is **13–41% faster vs `hpke-rs`** and **8–47% faster vs `rust-hpke`** across payload sizes; AES-128-GCM single-shot seal is **9–22% faster vs `hpke-rs`** across payloads ≤ 16 KiB, and beats `rust-hpke` by 29–51% up to 4 KiB but trails it at ≥ 16 KiB, where `rust-hpke`'s AES-GCM throughput pulls ahead. **Export is 71–76% faster vs `hpke-rs`** across all five output lengths — the largest sustained delta against that library. Post-setup `Context::seal` at 64 B is **13% faster vs `hpke-rs`** and **44% faster vs `rust-hpke`** (framing overhead dominates at this size; the per-byte AEAD rates converge and `rust-hpke` edges ahead on payloads ≥ 1 KiB). **End-to-end roundtrip on a 1 KiB message is 30% faster vs `hpke-rs` and 49% faster vs `rust-hpke`.**
+`hpke-ng` is benchmarked head-to-head against the two major Rust HPKE libraries, `hpke-rs` and `rust-hpke`, across **137 benchmark cells** (76 against `hpke-rs`, 61 against `rust-hpke`) spanning every supported ciphersuite. A cell counts as a *tie* when the two medians fall within ±2% of each other.
 
-Memory and binary footprint:
+| Comparison       | Cells  | Wins   | Ties   | Losses |
+|------------------|-------:|-------:|-------:|-------:|
+| vs `hpke-rs`     |     76 |     61 |     13 |      2 |
+| vs `rust-hpke`   |     61 |     38 |      7 |     16 |
+| **Combined**     | **137**| **99** | **20** | **18** |
+
+> `rust-hpke` has no standalone ML-KEM-768 / ML-KEM-1024 and no secp256k1 support, so those ciphersuites are scored only against `hpke-rs`.
+
+### Where the KEM wins come from
+
+Most of the speedup traces to two pieces of caching. On the **decapsulation** path, `hpke-ng` stores the expanded FIPS 203 decapsulation key directly in the `PrivateKey`, whereas `hpke-rs` rebuilds it from the seed on every `setup_receiver`. For **classical KEMs**, caching the recipient's serialized public key alongside the secret removes a redundant base-point scalar multiplication on every decap.
+
+| Operation                 | vs `hpke-rs`        | vs `rust-hpke`     |
+|---------------------------|---------------------|--------------------|
+| ML-KEM-768 / 1024 decap   | **54–56% faster**   | n/a                |
+| X25519 decap              | **44% faster**      | **51% faster**     |
+| X-Wing decap              | **38% faster**      | ≈ parity ¹         |
+| ML-KEM encap              | 33–41% faster       | n/a                |
+| X-Wing encap              | 15% faster          | ≈ parity           |
+
+¹ `rust-hpke` wraps raw decap inside a full HPKE setup, so the closest comparison is `hpke-ng`'s `setup_receiver`, which lands at roughly parity.
+
+### AEAD and single-shot throughput
+
+| Operation                          | vs `hpke-rs`             | vs `rust-hpke`                           |
+|------------------------------------|--------------------------|------------------------------------------|
+| Export (all 5 output lengths)      | **71–76% faster**        | —                                        |
+| Single-shot open (all payloads)    | 13–41% faster            | 8–47% faster                             |
+| AES-128-GCM single-shot seal       | 9–22% faster (≤ 16 KiB)  | 29–51% faster (≤ 4 KiB); slower ≥ 16 KiB |
+| Post-setup `Context::seal` (64 B)  | 13% faster               | 44% faster                               |
+| End-to-end roundtrip (1 KiB)       | **30% faster**           | **49% faster**                           |
+
+Export is the largest sustained advantage over `hpke-rs`. For bulk AEAD the per-byte rates converge as payloads grow: `rust-hpke` pulls ahead on AES-GCM at ≥ 16 KiB, and on post-setup `Context::seal` at ≥ 1 KiB, once framing overhead stops dominating.
+
+*(n/a = unsupported by that library; — = no separate head-to-head figure reported.)*
+
+### Memory and binary footprint
 
 | Quantity                                   | hpke-rs   | hpke-ng                                | rust-hpke     |
 |--------------------------------------------|-----------|----------------------------------------|---------------|
@@ -78,11 +114,22 @@ Memory and binary footprint:
 | `Context<_, _, Aes256Gcm>` struct          | 424 bytes | 1,048 bytes                            | 1,168 bytes   |
 | Minimal release binary                     | 586 KB    | **370 KB** (~37% smaller than hpke-rs) | 385 KB        |
 
-The `rust-hpke` equivalents are `AeadCtxS<A, Kdf, Kem>` / `AeadCtxR<A, Kdf, Kem>` (sender and receiver contexts respectively, measured here as `AeadCtxS` with `X25519HkdfSha256` + `HkdfSha256`). The context size grows by `Nh` bytes when switching to a larger KDF (e.g. +32 bytes for `HkdfSha512`). Note that there is no configuration struct equivalent to `Hpke<K, F, A>` in `rust-hpke` — it uses free functions (`setup_sender`, `setup_receiver`) rather than a typed handle, so that row is set to n/a. The `ExportOnly` row maps to `ExportOnlyAead` in `rust-hpke`'s type system; its 184-byte size is larger than `hpke-ng`'s 56 bytes because `rust-hpke`'s `AeadCtx` always reserves space for the full nonce buffer regardless of the AEAD variant.
+**Notes on the table above:**
 
-The AES-GCM `Context` rows are larger for `hpke-ng` than `hpke-rs` because the cipher's expanded round keys + GHash table are cached inline — that is what eliminates the per-call AES key-schedule cost in `Context::seal`. Streaming applications using AES-GCM trade memory for throughput here; `ChaCha20-Poly1305` is unaffected.
+- `rust-hpke` has no typed configuration handle — it uses free `setup_sender` / `setup_receiver` functions rather than a struct like `Hpke<K, F, A>`, so that row is n/a. Its context types are `AeadCtxS<A, Kdf, Kem>` (sender) and `AeadCtxR<A, Kdf, Kem>` (receiver), measured here as `AeadCtxS` with `X25519HkdfSha256` + `HkdfSha256`.
+- Context size grows by `Nh` bytes with a larger KDF — e.g. +32 bytes for `HkdfSha512`.
+- `ExportOnly` maps to `rust-hpke`'s `ExportOnlyAead`. It is larger there (184 B vs 56 B) because `rust-hpke`'s `AeadCtx` always reserves space for a full nonce buffer regardless of the AEAD variant.
+- The AES-GCM `Context` rows are larger in `hpke-ng` than in `hpke-rs` because the expanded round keys + GHash table are cached inline — which is exactly what eliminates the per-call AES key-schedule cost in `Context::seal`. AES-GCM streaming trades memory for throughput; `ChaCha20-Poly1305` is unaffected.
 
-Build with `RUSTFLAGS="-C target-cpu=native"` for AES-NI / SHA-NI where available. The `[profile.bench]` in `Cargo.toml` enables `lto = "thin"` and `codegen-units = 1`. For head-to-head numbers, run `cargo bench --features comparative --bench comparative` locally; the comparative bench loads both `hpke-rs` (with its `experimental` feature so the post-quantum KEM stubs are wired up) and `rust-hpke` (pinned to a v0.14 pre-release commit for X-Wing support) as dev-dependencies, and produces side-by-side criterion results for every supported ciphersuite. KEM-op rows for `hpke-rs` and `rust-hpke` carry an `_via_setup_*` suffix because neither library exposes raw `encap` / `decap` separable from setup; the suffix marks rows that are explicitly *not* apples-to-apples with `hpke-ng`'s bare-operation rows.
+### Reproducing the benchmarks
+
+Build with `RUSTFLAGS="-C target-cpu=native"` to pick up AES-NI / SHA-NI where available; `[profile.bench]` in `Cargo.toml` sets `lto = "thin"` and `codegen-units = 1`. For the head-to-head numbers:
+
+```bash
+cargo bench --features comparative --bench comparative
+```
+
+This loads both `hpke-rs` (with its `experimental` feature, so the post-quantum KEM stubs are wired up) and `rust-hpke` (pinned to a v0.14 pre-release commit for X-Wing support) as dev-dependencies, and emits side-by-side criterion results for every supported ciphersuite. KEM-op rows for `hpke-rs` and `rust-hpke` carry a `_via_setup_*` suffix: neither library exposes raw `encap` / `decap` separable from setup, so those rows are explicitly *not* apples-to-apples with `hpke-ng`'s bare-operation rows.
 
 ## Security posture
 
