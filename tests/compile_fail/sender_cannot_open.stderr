@@ -1,0 +1,22 @@
+error[E0599]: no method named `open` found for struct `SenderContext<K, F, A>` in the current scope
+  --> tests/compile_fail/sender_cannot_open.rs:17:17
+   |
+17 |     let _ = sender.open(b"aad", b"ciphertext");
+   |                    ^^^^ this is an associated function, not a method
+   |
+   = note: found the following associated functions; to be used as methods, functions must have a `self` parameter
+note: the candidate is defined in the trait `hpke_ng::SealingAead`
+  --> src/aead.rs
+   |
+   | /     fn open(
+   | |         cipher: &Self::Cipher,
+   | |         nonce: &[u8],
+   | |         aad: &[u8],
+   | |         ct: &[u8],
+   | |     ) -> Result<Vec<u8>, HpkeError>;
+   | |____________________________________^
+help: use associated function syntax instead
+   |
+17 -     let _ = sender.open(b"aad", b"ciphertext");
+17 +     let _ = SenderContext<DhKem<X25519, hpke_ng::HkdfSha256>, hpke_ng::HkdfSha256, hpke_ng::ChaCha20Poly1305>::open(b"aad", b"ciphertext");
+   |

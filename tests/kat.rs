@@ -93,7 +93,7 @@ fn opt_hex(s: &Option<String>) -> Option<Vec<u8>> {
 
 /// Common KAT verification: derived keys, key-schedule outputs, and exporter values.
 /// Bound `A: Aead` so it works for both `SealingAead` and `ExportOnly` configurations.
-fn run_kat_common<K, F, A>(v: &HpkeTestVector) -> Context<K, F, A>
+fn run_kat_common<K, F, A>(v: &HpkeTestVector) -> ReceiverContext<K, F, A>
 where
 	K: hpke_ng::Kem,
 	F: hpke_ng::Kdf,

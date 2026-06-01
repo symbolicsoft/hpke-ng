@@ -1,0 +1,22 @@
+error[E0599]: no method named `seal` found for struct `ReceiverContext<K, F, A>` in the current scope
+  --> tests/compile_fail/receiver_cannot_seal.rs:23:19
+   |
+23 |     let _ = receiver.seal(b"aad", b"plaintext");
+   |                      ^^^^ this is an associated function, not a method
+   |
+   = note: found the following associated functions; to be used as methods, functions must have a `self` parameter
+note: the candidate is defined in the trait `hpke_ng::SealingAead`
+  --> src/aead.rs
+   |
+   | /     fn seal(
+   | |         cipher: &Self::Cipher,
+   | |         nonce: &[u8],
+   | |         aad: &[u8],
+   | |         pt: &[u8],
+   | |     ) -> Result<Vec<u8>, HpkeError>;
+   | |____________________________________^
+help: use associated function syntax instead
+   |
+23 -     let _ = receiver.seal(b"aad", b"plaintext");
+23 +     let _ = ReceiverContext<DhKem<X25519, hpke_ng::HkdfSha256>, hpke_ng::HkdfSha256, hpke_ng::ChaCha20Poly1305>::seal(b"aad", b"plaintext");
+   |

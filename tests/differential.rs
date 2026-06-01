@@ -68,14 +68,16 @@ macro_rules! diff_base_sealing {
 				let (ss_ng, enc_ng) = <$ng_kem>::encap_with_ikm(&pk_r_ng, &ikm_e).unwrap();
 
 				// Build sender context and seal.
-				let mut send_ctx = ng::key_schedule::<$ng_kem, $ng_kdf, $ng_aead>(
-					0x00, // Base mode
-					ss_ng.as_ref(),
-					&info,
-					&[],
-					&[],
-				)
-				.unwrap();
+				let mut send_ctx = ng::SenderContext::from_context(
+					ng::key_schedule::<$ng_kem, $ng_kdf, $ng_aead>(
+						0x00, // Base mode
+						ss_ng.as_ref(),
+						&info,
+						&[],
+						&[],
+					)
+					.unwrap(),
+				);
 				let ctxt_ng = send_ctx.seal(&aad, &pt).unwrap();
 
 				// --- Receiver (hpke-rs) ---
@@ -175,14 +177,16 @@ macro_rules! diff_psk_sealing {
 
 				let (ss_ng, enc_ng) = <$ng_kem>::encap_with_ikm(&pk_r_ng, &ikm_e).unwrap();
 
-				let mut send_ctx = ng::key_schedule::<$ng_kem, $ng_kdf, $ng_aead>(
-					0x01, // Psk mode
-					ss_ng.as_ref(),
-					&info,
-					&psk,
-					&psk_id,
-				)
-				.unwrap();
+				let mut send_ctx = ng::SenderContext::from_context(
+					ng::key_schedule::<$ng_kem, $ng_kdf, $ng_aead>(
+						0x01, // Psk mode
+						ss_ng.as_ref(),
+						&info,
+						&psk,
+						&psk_id,
+					)
+					.unwrap(),
+				);
 				let ctxt_ng = send_ctx.seal(&aad, &pt).unwrap();
 
 				// --- Receiver (hpke-rs) ---

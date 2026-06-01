@@ -1,5 +1,5 @@
-error[E0599]: no method named `clone` found for struct `hpke_ng::Context<K, F, A>` in the current scope
-  --> tests/compile_fail/context_not_clone.rs:14:14
+error[E0599]: no method named `clone` found for struct `SenderContext<K, F, A>` in the current scope
+  --> tests/compile_fail/context_not_clone.rs:15:14
    |
-14 |     let _ = ctx.clone();
-   |                 ^^^^^ method not found in `hpke_ng::Context<DhKem<X25519, hpke_ng::HkdfSha256>, hpke_ng::HkdfSha256, hpke_ng::ChaCha20Poly1305>`
+15 |     let _ = ctx.clone();
+   |                 ^^^^^ method not found in `SenderContext<DhKem<X25519, hpke_ng::HkdfSha256>, hpke_ng::HkdfSha256, hpke_ng::ChaCha20Poly1305>`
