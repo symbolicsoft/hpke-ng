@@ -94,7 +94,6 @@ hkdf_impl!(
 /// `ikm` is treated as a single piece. For piecewise IKM (e.g. when the
 /// caller already has the ikm split across slices), use
 /// [`labeled_extract_pieces`].
-#[allow(dead_code)]
 pub(crate) fn labeled_extract<F: Kdf>(
 	salt: &[u8],
 	suite_id: &[u8],
