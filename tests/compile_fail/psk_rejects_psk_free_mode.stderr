@@ -1,0 +1,11 @@
+error[E0277]: the trait bound `hpke_ng::BaseModeTag: hpke_ng::PskMode` is not satisfied
+ --> tests/compile_fail/psk_rejects_psk_free_mode.rs:7:3
+  |
+7 |         BaseModeTag,
+  |         ^^^^^^^^^^^ the trait `hpke_ng::PskMode` is not implemented for `hpke_ng::BaseModeTag`
+  |
+note: required by a bound in `hpke_ng::key_schedule`
+ --> src/lib.rs
+  |
+  | pub fn key_schedule<M: PskMode, K: Kem, F: Kdf, A: Aead>(
+  |                        ^^^^^^^ required by this bound in `key_schedule`
