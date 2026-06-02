@@ -121,9 +121,36 @@ where
 	let shared_secret = hex_decode(&v.shared_secret);
 
 	// 1. Direct key-schedule comparison.
-	let direct_ctx =
-		hpke_ng::__test_only::key_schedule::<K, F, A>(v.mode, &shared_secret, &info, &psk, &psk_id)
-			.expect("key_schedule");
+	let direct_ctx = match v.mode {
+		0x00 => hpke_ng::__test_only::key_schedule_psk_free::<BaseModeTag, K, F, A>(
+			&shared_secret,
+			&info,
+		)
+		.expect("__test_only::key_schedule_psk_free::<BaseModeTag, K, F, A>"),
+		0x01 => hpke_ng::__test_only::key_schedule::<PskModeTag, K, F, A>(
+			&shared_secret,
+			&info,
+			&psk,
+			&psk_id,
+		)
+		.expect("__test_only::key_schedule::<PskModeTag, K, F, A>"),
+		0x02 => hpke_ng::__test_only::key_schedule_psk_free::<AuthModeTag, K, F, A>(
+			&shared_secret,
+			&info,
+		)
+		.expect("__test_only::key_schedule_psk_free::<AuthModeTag, K, F, A>"),
+		0x03 => hpke_ng::__test_only::key_schedule::<AuthPskModeTag, K, F, A>(
+			&shared_secret,
+			&info,
+			&psk,
+			&psk_id,
+		)
+		.expect("__test_only::key_schedule::<AuthPskModeTag, K, F, A>"),
+		m => panic!(
+			"Auth/AuthPsk vectors (mode={}) handled by run_kat_auth_*",
+			m
+		),
+	};
 	assert_eq!(direct_ctx.key(), hex_decode(&v.key), "key mismatch");
 	assert_eq!(
 		direct_ctx.nonce(),
