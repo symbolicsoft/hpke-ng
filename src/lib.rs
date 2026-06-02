@@ -104,6 +104,61 @@ pub(crate) mod modes {
 	pub const AUTH: u8 = 0x02;
 	pub const AUTH_PSK: u8 = 0x03;
 }
+/// Sealed marker trait for PSK-free HPKE modes (Base and Auth).
+/// For internal and test-harness use only; not part of the public API.
+#[doc(hidden)]
+pub trait PskFreeMode: sealed::Sealed {
+	/// The RFC 9180 mode byte for this mode.
+	#[doc(hidden)]
+	const MODE_BYTE: u8;
+}
+
+/// Sealed marker trait for PSK-bearing HPKE modes (PSK and AuthPSK).
+/// For internal and test-harness use only; not part of the public API.
+#[doc(hidden)]
+pub trait PskMode: sealed::Sealed {
+	/// The RFC 9180 mode byte for this mode.
+	#[doc(hidden)]
+	const MODE_BYTE: u8;
+}
+
+/// Mode tag for the HPKE Base mode (RFC 9180 §5.1.1).
+/// For internal and test-harness use only; not part of the public API.
+#[doc(hidden)]
+pub struct BaseModeTag;
+
+/// Mode tag for the HPKE Auth mode (RFC 9180 §5.1.3).
+/// For internal and test-harness use only; not part of the public API.
+#[doc(hidden)]
+pub struct AuthModeTag;
+
+/// Mode tag for the HPKE PSK mode (RFC 9180 §5.1.2).
+/// For internal and test-harness use only; not part of the public API.
+#[doc(hidden)]
+pub struct PskModeTag;
+
+/// Mode tag for the HPKE AuthPSK mode (RFC 9180 §5.1.4).
+/// For internal and test-harness use only; not part of the public API.
+#[doc(hidden)]
+pub struct AuthPskModeTag;
+
+impl sealed::Sealed for BaseModeTag {}
+impl sealed::Sealed for AuthModeTag {}
+impl sealed::Sealed for PskModeTag {}
+impl sealed::Sealed for AuthPskModeTag {}
+
+impl PskFreeMode for BaseModeTag {
+	const MODE_BYTE: u8 = modes::BASE;
+}
+impl PskFreeMode for AuthModeTag {
+	const MODE_BYTE: u8 = modes::AUTH;
+}
+impl PskMode for PskModeTag {
+	const MODE_BYTE: u8 = modes::PSK;
+}
+impl PskMode for AuthPskModeTag {
+	const MODE_BYTE: u8 = modes::AUTH_PSK;
+}
 
 #[inline]
 pub(crate) fn ciphersuite<K: Kem, F: Kdf, A: Aead>() -> [u8; 10] {
@@ -135,41 +190,39 @@ fn verify_psk_inputs(mode: u8, psk: &[u8], psk_id: &[u8]) -> Result<(), HpkeErro
 }
 
 #[cfg(not(feature = "kat-internals"))]
-pub(crate) fn key_schedule<K: Kem, F: Kdf, A: Aead>(
-	mode: u8,
+pub(crate) fn key_schedule<M: PskMode, K: Kem, F: Kdf, A: Aead>(
 	shared_secret: &[u8],
 	info: &[u8],
 	psk: &[u8],
 	psk_id: &[u8],
 ) -> Result<Context<K, F, A>, HpkeError> {
-	key_schedule_inner::<K, F, A>(mode, shared_secret, info, psk, psk_id)
+	key_schedule_inner::<M, K, F, A>(shared_secret, info, psk, psk_id)
 }
 
 #[cfg(feature = "kat-internals")]
 #[doc(hidden)]
-pub fn key_schedule<K: Kem, F: Kdf, A: Aead>(
-	mode: u8,
+pub fn key_schedule<M: PskMode, K: Kem, F: Kdf, A: Aead>(
 	shared_secret: &[u8],
 	info: &[u8],
 	psk: &[u8],
 	psk_id: &[u8],
 ) -> Result<Context<K, F, A>, HpkeError> {
-	key_schedule_inner::<K, F, A>(mode, shared_secret, info, psk, psk_id)
+	key_schedule_inner::<M, K, F, A>(shared_secret, info, psk, psk_id)
 }
 
 /// Fast-path key schedule for Base and Auth modes, where `psk` and `psk_id` are
 /// always empty. Skips PSK input validation and hardcodes both to &[], avoiding
 /// a `verify_psk_inputs` call and making the empty-input assumptions structurally
 /// explicit rather than relying on callers passing the right literals.
-fn key_schedule_base<K: Kem, F: Kdf, A: Aead>(
-	mode: u8,
+/// IMPORTANT: PSK and `AuthPSK` mode callers should use `key_schedule_inner` instead.
+fn key_schedule_psk_free<M: PskFreeMode, K: Kem, F: Kdf, A: Aead>(
 	shared_secret: &[u8],
 	info: &[u8],
 ) -> Result<Context<K, F, A>, HpkeError> {
 	let suite = ciphersuite::<K, F, A>();
 	let psk_id_hash = Zeroizing::new(labeled_extract::<F>(&[], &suite, b"psk_id_hash", &[]));
 	let info_hash = labeled_extract::<F>(&[], &suite, b"info_hash", info);
-	let mode_arr = [mode];
+	let mode_arr = [M::MODE_BYTE];
 	// `ks_context = mode || psk_id_hash || info_hash`. Fed piecewise into
 	// each `expand_multi_info` call instead of allocating a flat `Vec`.
 	let ks_pieces: [&[u8]; 3] = [&mode_arr, &psk_id_hash, &info_hash];
@@ -186,20 +239,19 @@ fn key_schedule_base<K: Kem, F: Kdf, A: Aead>(
 
 /// General key schedule for PSK and `AuthPSK` modes. Validates that `psk` and
 /// `psk_id` are consistent and well-formed before deriving the context.
-/// Base and Auth mode callers should use `key_schedule_base` instead.
-fn key_schedule_inner<K: Kem, F: Kdf, A: Aead>(
-	mode: u8,
+/// IMPORTANT: Base and Auth mode callers should use `key_schedule_base` instead.
+fn key_schedule_inner<M: PskMode, K: Kem, F: Kdf, A: Aead>(
 	shared_secret: &[u8],
 	info: &[u8],
 	psk: &[u8],
 	psk_id: &[u8],
 ) -> Result<Context<K, F, A>, HpkeError> {
-	verify_psk_inputs(mode, psk, psk_id)?;
+	verify_psk_inputs(M::MODE_BYTE, psk, psk_id)?;
 	let suite = ciphersuite::<K, F, A>();
 	let psk_id_hash = Zeroizing::new(labeled_extract::<F>(&[], &suite, b"psk_id_hash", psk_id));
 	let info_hash = labeled_extract::<F>(&[], &suite, b"info_hash", info);
 
-	let mode_arr = [mode];
+	let mode_arr = [M::MODE_BYTE];
 	// `ks_context = mode || psk_id_hash || info_hash`. Fed piecewise into
 	// each `expand_multi_info` call instead of allocating a flat `Vec`.
 	let ks_pieces: [&[u8]; 3] = [&mode_arr, &psk_id_hash, &info_hash];
@@ -246,7 +298,7 @@ impl<K: Kem, F: Kdf, A: Aead> Hpke<K, F, A> {
 		info: &[u8],
 	) -> Result<(K::EncappedKey, SenderContext<K, F, A>), HpkeError> {
 		let (ss, enc) = K::encap(rng, pk_r)?;
-		let ctx = key_schedule_base::<K, F, A>(modes::BASE, ss.as_ref(), info)?;
+		let ctx = key_schedule_psk_free::<BaseModeTag, K, F, A>(ss.as_ref(), info)?;
 		Ok((enc, SenderContext::new(ctx)))
 	}
 
@@ -257,7 +309,7 @@ impl<K: Kem, F: Kdf, A: Aead> Hpke<K, F, A> {
 		info: &[u8],
 	) -> Result<ReceiverContext<K, F, A>, HpkeError> {
 		let ss = K::decap(enc, sk_r)?;
-		key_schedule_base::<K, F, A>(modes::BASE, ss.as_ref(), info).map(ReceiverContext::new)
+		key_schedule_psk_free::<BaseModeTag, K, F, A>(ss.as_ref(), info).map(ReceiverContext::new)
 	}
 
 	/// `SetupPSKS` (RFC 9180 §5.1.2).
@@ -273,7 +325,7 @@ impl<K: Kem, F: Kdf, A: Aead> Hpke<K, F, A> {
 		psk_id: &[u8],
 	) -> Result<(K::EncappedKey, SenderContext<K, F, A>), HpkeError> {
 		let (ss, enc) = K::encap(rng, pk_r)?;
-		let ctx = key_schedule::<K, F, A>(modes::PSK, ss.as_ref(), info, psk, psk_id)?;
+		let ctx = key_schedule::<PskModeTag, K, F, A>(ss.as_ref(), info, psk, psk_id)?;
 		Ok((enc, SenderContext::new(ctx)))
 	}
 
@@ -290,7 +342,7 @@ impl<K: Kem, F: Kdf, A: Aead> Hpke<K, F, A> {
 		psk_id: &[u8],
 	) -> Result<ReceiverContext<K, F, A>, HpkeError> {
 		let ss = K::decap(enc, sk_r)?;
-		key_schedule::<K, F, A>(modes::PSK, ss.as_ref(), info, psk, psk_id)
+		key_schedule::<PskModeTag, K, F, A>(ss.as_ref(), info, psk, psk_id)
 			.map(ReceiverContext::new)
 	}
 }
@@ -540,7 +592,7 @@ impl<K: AuthKem, F: Kdf, A: Aead> Hpke<K, F, A> {
 		sk_s: &K::PrivateKey,
 	) -> Result<(K::EncappedKey, SenderContext<K, F, A>), HpkeError> {
 		let (ss, enc) = K::auth_encap(rng, pk_r, sk_s)?;
-		let ctx = key_schedule_base::<K, F, A>(modes::AUTH, ss.as_ref(), info)?;
+		let ctx = key_schedule_psk_free::<AuthModeTag, K, F, A>(ss.as_ref(), info)?;
 		Ok((enc, SenderContext::new(ctx)))
 	}
 
@@ -552,7 +604,7 @@ impl<K: AuthKem, F: Kdf, A: Aead> Hpke<K, F, A> {
 		pk_s: &K::PublicKey,
 	) -> Result<ReceiverContext<K, F, A>, HpkeError> {
 		let ss = K::auth_decap(enc, sk_r, pk_s)?;
-		key_schedule_base::<K, F, A>(modes::AUTH, ss.as_ref(), info).map(ReceiverContext::new)
+		key_schedule_psk_free::<AuthModeTag, K, F, A>(ss.as_ref(), info).map(ReceiverContext::new)
 	}
 
 	/// `SetupAuthPSKS` (RFC 9180 §5.1.4).
@@ -569,7 +621,7 @@ impl<K: AuthKem, F: Kdf, A: Aead> Hpke<K, F, A> {
 		sk_s: &K::PrivateKey,
 	) -> Result<(K::EncappedKey, SenderContext<K, F, A>), HpkeError> {
 		let (ss, enc) = K::auth_encap(rng, pk_r, sk_s)?;
-		let ctx = key_schedule::<K, F, A>(modes::AUTH_PSK, ss.as_ref(), info, psk, psk_id)?;
+		let ctx = key_schedule::<AuthPskModeTag, K, F, A>(ss.as_ref(), info, psk, psk_id)?;
 		Ok((enc, SenderContext::new(ctx)))
 	}
 
@@ -587,7 +639,7 @@ impl<K: AuthKem, F: Kdf, A: Aead> Hpke<K, F, A> {
 		pk_s: &K::PublicKey,
 	) -> Result<ReceiverContext<K, F, A>, HpkeError> {
 		let ss = K::auth_decap(enc, sk_r, pk_s)?;
-		key_schedule::<K, F, A>(modes::AUTH_PSK, ss.as_ref(), info, psk, psk_id)
+		key_schedule::<AuthPskModeTag, K, F, A>(ss.as_ref(), info, psk, psk_id)
 			.map(ReceiverContext::new)
 	}
 }
@@ -595,7 +647,19 @@ impl<K: AuthKem, F: Kdf, A: Aead> Hpke<K, F, A> {
 #[cfg(feature = "kat-internals")]
 #[doc(hidden)]
 pub mod __test_only {
-	pub use crate::key_schedule;
+	pub use crate::{AuthModeTag, AuthPskModeTag, BaseModeTag, PskModeTag, key_schedule};
+
+	pub fn key_schedule_psk_free<
+		M: crate::PskFreeMode,
+		K: crate::Kem,
+		F: crate::Kdf,
+		A: crate::Aead,
+	>(
+		shared_secret: &[u8],
+		info: &[u8],
+	) -> Result<crate::Context<K, F, A>, crate::HpkeError> {
+		crate::key_schedule_psk_free::<M, K, F, A>(shared_secret, info)
+	}
 }
 
 #[cfg(test)]
