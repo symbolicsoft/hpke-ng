@@ -1,0 +1,13 @@
+error[E0277]: the trait bound `hpke_ng::AuthPskModeTag: hpke_ng::PskFreeMode` is not satisfied
+ --> tests/compile_fail/auth_psk_mode_rejects_psk_free_schedule.rs:6:3
+  |
+6 |         AuthPskModeTag,
+  |         ^^^^^^^^^^^^^^ the trait `hpke_ng::PskFreeMode` is not implemented for `hpke_ng::AuthPskModeTag`
+  |
+note: required by a bound in `hpke_ng::__test_only::key_schedule_psk_free`
+ --> src/lib.rs
+  |
+  |     pub fn key_schedule_psk_free<
+  |            --------------------- required by a bound in this function
+  |         M: crate::PskFreeMode,
+  |            ^^^^^^^^^^^^^^^^^^ required by this bound in `key_schedule_psk_free`

@@ -1,0 +1,13 @@
+error[E0603]: module `sealed` is private
+ --> tests/compile_fail/external_impl_sealed.rs:6:15
+  |
+6 | impl hpke_ng::sealed::Sealed for SomeTag {}
+  |               ^^^^^^  ------ trait `Sealed` is not publicly re-exported
+  |               |
+  |               private module
+  |
+note: the module `sealed` is defined here
+ --> src/lib.rs
+  |
+  | mod sealed;
+  | ^^^^^^^^^^
