@@ -158,14 +158,14 @@ This crate composes RustCrypto primitives. Constant-time properties are inherite
 ```bash
 cargo test                                                 # library + roundtrip
 cargo test --features pq                                   # + post-quantum tests
-cargo test --features pq,kat-internals                     # + RFC 9180 KAT
-cargo test --features pq,kat-internals --test compile_fail # + compile-time invariant tests
-cargo test --features pq,differential,kat-internals        # + cross-impl differential vs hpke-rs
+cargo test --features pq,hazmat-kat-internals                     # + RFC 9180 KAT
+cargo test --features pq,hazmat-kat-internals --test compile_fail # + compile-time invariant tests
+cargo test --features pq,hazmat-differential,hazmat-kat-internals        # + cross-impl differential vs hpke-rs
 ```
 
 To regenerate the compile-fail `.stderr` fixtures after an intentional change (e.g. a toolchain bump), run:
 ```bash
-TRYBUILD=overwrite cargo test --features pq,kat-internals --test compile_fail
+TRYBUILD=overwrite cargo test --features pq,hazmat-kat-internals --test compile_fail
 ```
 This rewrites the fixtures unconditionally and should not be used as the normal test invocation.
 

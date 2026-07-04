@@ -514,7 +514,7 @@ fn encap_with<D: DiffieHellman, H: Kdf, R: CryptoRng + RngCore>(
 
 /// Test-only API: encap with a caller-supplied IKM for the ephemeral key, used
 /// by KAT and differential test harnesses.
-#[cfg(any(test, feature = "kat-internals", feature = "differential"))]
+#[cfg(any(test, feature = "hazmat-kat-internals", feature = "hazmat-differential"))]
 #[allow(dead_code)]
 pub(crate) fn encap_with_ikm<D: DiffieHellman, H: Kdf>(
 	pk_r: &DhPublicKey<D>,
@@ -530,7 +530,7 @@ pub(crate) fn encap_with_ikm<D: DiffieHellman, H: Kdf>(
 	))
 }
 
-#[cfg(any(test, feature = "kat-internals", feature = "differential"))]
+#[cfg(any(test, feature = "hazmat-kat-internals", feature = "hazmat-differential"))]
 #[allow(dead_code)]
 pub(crate) fn auth_encap_with_ikm<D: DiffieHellman, H: Kdf>(
 	pk_r: &DhPublicKey<D>,
@@ -551,7 +551,7 @@ pub(crate) fn auth_encap_with_ikm<D: DiffieHellman, H: Kdf>(
 	))
 }
 
-#[cfg(any(test, feature = "kat-internals", feature = "differential"))]
+#[cfg(any(test, feature = "hazmat-kat-internals", feature = "hazmat-differential"))]
 impl<D: DiffieHellman, H: Kdf> DhKem<D, H> {
 	/// Test-only: encap with a caller-supplied ephemeral IKM (deterministic).
 	pub fn encap_with_ikm(

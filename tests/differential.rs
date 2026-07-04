@@ -1,7 +1,7 @@
 //! Cross-implementation differential test: feed identical inputs to `hpke-ng`
 //! and `hpke-rs` and assert byte-equal outputs.
 //!
-//! Run with: `cargo test --features differential,kat-internals --test differential`.
+//! Run with: `cargo test --features hazmat-differential,hazmat-kat-internals --test differential`.
 //!
 //! Strategy:
 //!   - Use `hpke-ng` as the *sender* with `encap_with_ikm` (deterministic ephemeral key).
@@ -15,7 +15,7 @@
 //! P-384 and P-521 are omitted because hpke-rs-rust-crypto 0.6 only supports
 //! X25519, P-256, and secp256k1 (the `supports_kem` gate rejects others).
 
-#![cfg(feature = "differential")]
+#![cfg(feature = "hazmat-differential")]
 #![allow(non_snake_case)]
 
 use hpke_ng as ng;

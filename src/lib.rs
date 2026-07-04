@@ -225,7 +225,7 @@ fn key_schedule_psk_free_impl<M: PskFreeMode, K: Kem, F: Kdf, A: Aead>(
 }
 
 // Public-facing wrapper — visibility changes with feature gate.
-#[cfg(not(feature = "kat-internals"))]
+#[cfg(not(feature = "hazmat-kat-internals"))]
 pub(crate) fn key_schedule_psk_free<M: PskFreeMode, K: Kem, F: Kdf, A: Aead>(
 	shared_secret: &[u8],
 	info: &[u8],
@@ -233,7 +233,7 @@ pub(crate) fn key_schedule_psk_free<M: PskFreeMode, K: Kem, F: Kdf, A: Aead>(
 	key_schedule_psk_free_impl::<M, K, F, A>(shared_secret, info)
 }
 
-#[cfg(feature = "kat-internals")]
+#[cfg(feature = "hazmat-kat-internals")]
 #[doc(hidden)]
 pub fn key_schedule_psk_free<M: PskFreeMode, K: Kem, F: Kdf, A: Aead>(
 	shared_secret: &[u8],
@@ -278,7 +278,7 @@ fn key_schedule_psk_impl<M: PskMode, K: Kem, F: Kdf, A: Aead>(
 }
 
 // Public-facing wrapper — visibility changes with feature gate.
-#[cfg(not(feature = "kat-internals"))]
+#[cfg(not(feature = "hazmat-kat-internals"))]
 pub(crate) fn key_schedule_psk<M: PskMode, K: Kem, F: Kdf, A: Aead>(
 	shared_secret: &[u8],
 	info: &[u8],
@@ -288,7 +288,7 @@ pub(crate) fn key_schedule_psk<M: PskMode, K: Kem, F: Kdf, A: Aead>(
 	key_schedule_psk_impl::<M, K, F, A>(shared_secret, info, psk, psk_id)
 }
 
-#[cfg(feature = "kat-internals")]
+#[cfg(feature = "hazmat-kat-internals")]
 #[doc(hidden)]
 pub fn key_schedule_psk<M: PskMode, K: Kem, F: Kdf, A: Aead>(
 	shared_secret: &[u8],
@@ -677,7 +677,7 @@ impl<K: AuthKem, F: Kdf, A: Aead> Hpke<K, F, A> {
 	}
 }
 
-#[cfg(feature = "kat-internals")]
+#[cfg(feature = "hazmat-kat-internals")]
 #[doc(hidden)]
 pub mod __test_only {
 	pub use crate::key_schedule_psk;
