@@ -153,6 +153,12 @@ This crate composes RustCrypto primitives. Constant-time properties are inherite
 | AES-128-GCM, AES-256-GCM | **CT only with hardware AES-NI/PCLMULQDQ.** Prefer `ChaCha20Poly1305` on platforms without these instructions. |
 | ML-KEM, X-Wing | CT per upstream documentation; both crates are pre-1.0. |
 
+## Zeroization
+
+Everything this crate controls is scrubbed: private keys, shared secrets, PRKs, candidate scalars, seeds, and the derived AEAD key and base nonce are held in `Zeroizing`/`ZeroizeOnDrop` wrappers, with explicit manual scrubbing wherever an upstream type lacks zeroize-on-drop (the X448 scalar and shared-secret point, `GenericArray` temporaries from `SecretKey::to_bytes` and `HkdfExtract::finalize`, and the ML-KEM/X-Wing shared-secret arrays).
+
+**Known limitation — HKDF/HMAC internal state.** The RustCrypto `hkdf`/`hmac` crates do not zeroize their internal HMAC state on drop. Every HKDF extract/expand operation therefore leaves PRK-derived ipad/opad block state transiently in freed memory. This is key-equivalent material: an attacker who can read process memory (core dumps, swap, a same-process memory-disclosure bug) could recover it while the allocation remains unreused. The limitation is shared by every RustCrypto-based HPKE implementation and cannot be fixed from this crate. Deployments with a strong memory-forensics threat model should disable core dumps and swap (or use encrypted swap) for processes holding HPKE keys.
+
 ## Testing
 
 ```bash
