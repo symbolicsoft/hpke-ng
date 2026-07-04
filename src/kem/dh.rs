@@ -432,7 +432,9 @@ impl<D: DiffieHellman, H: Kdf> Kem for DhKem<D, H> {
 		sk_r: &Self::PrivateKey,
 	) -> Result<Self::SharedSecret, HpkeError> {
 		let pk_e = D::pk_from_bytes(enc.as_ref())?;
-		let dh = Zeroizing::new(D::dh(&sk_r.sk, &pk_e)?);
+		// `D::dh` reports the RFC 9180 §7.1.4 all-zeros rejection as
+		// `EncapError`; relabel for the decapsulation direction.
+		let dh = Zeroizing::new(D::dh(&sk_r.sk, &pk_e).map_err(|_| HpkeError::DecapError)?);
 		// `sk_r.pk_bytes` was cached at construction time; using it here
 		// saves the base-point scalar mult that `sk_to_pk` would otherwise
 		// perform on every decap.
@@ -477,8 +479,9 @@ impl<D: DiffieHellman, H: Kdf> AuthKem for DhKem<D, H> {
 		pk_s: &Self::PublicKey,
 	) -> Result<Self::SharedSecret, HpkeError> {
 		let pk_e = D::pk_from_bytes(enc.as_ref())?;
-		let dh1 = Zeroizing::new(D::dh(&sk_r.sk, &pk_e)?);
-		let dh2 = Zeroizing::new(D::dh(&sk_r.sk, &pk_s.0)?);
+		// See `decap`: relabel the all-zeros rejection for this direction.
+		let dh1 = Zeroizing::new(D::dh(&sk_r.sk, &pk_e).map_err(|_| HpkeError::DecapError)?);
+		let dh2 = Zeroizing::new(D::dh(&sk_r.sk, &pk_s.0).map_err(|_| HpkeError::DecapError)?);
 		let pk_sender = D::pk_to_bytes(&pk_s.0);
 		Ok(DhSharedSecret(extract_and_expand_pieces::<D, H>(
 			&[&dh1, &dh2],
@@ -983,6 +986,17 @@ mod tests {
 		let mut os_rng = OsRng;
 		let r = Suite::encap(&mut os_rng.unwrap_mut(), &pk_zero);
 		assert_eq!(r.err(), Some(HpkeError::EncapError));
+	}
+
+	/// The all-zeros rejection must surface as `DecapError` on the receiver
+	/// side (`D::dh` reports it as `EncapError`; `decap` relabels it).
+	#[test]
+	fn x25519_decap_rejects_small_order_zero_enc() {
+		type Suite = DhKem<X25519, crate::HkdfSha256>;
+		let mut os_rng = OsRng;
+		let (sk_r, _) = Suite::generate(&mut os_rng.unwrap_mut()).unwrap();
+		let enc = Suite::enc_from_bytes(&[0u8; 32]).unwrap();
+		assert_eq!(Suite::decap(&enc, &sk_r).err(), Some(HpkeError::DecapError));
 	}
 
 	/// RFC 7748 §5: load the same X448 scalar with and without pre-clamping;

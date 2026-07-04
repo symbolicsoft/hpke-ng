@@ -31,13 +31,11 @@ p521             = { version = "0.13", default-features = false, features = ["ar
 k256             = { version = "0.13", default-features = false, features = ["arithmetic", "ecdh"] }
 ml-kem           = { version = "0.3.2", default-features = false, features = ["zeroize"], optional = true }
 x-wing           = { version = "0.1.0-rc.0", default-features = false, features = ["zeroize"], optional = true }
-serde            = { version = "1",    default-features = false, features = ["derive"], optional = true }
 
 [features]
 default       = ["std"]
 std           = ["rand_core/std", "subtle/std", "aes-gcm/std", "chacha20poly1305/std"]
 pq            = ["dep:ml-kem", "dep:x-wing", "dep:rand_core_10", "dep:shake"]
-serde         = ["dep:serde"]
 differential  = []
 comparative   = ["pq"]
 kat-internals = []
