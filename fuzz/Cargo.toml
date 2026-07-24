@@ -16,7 +16,7 @@ libfuzzer-sys = "0.4"
 
 [dependencies.hpke-ng]
 path     = ".."
-features = ["pq", "kat-internals"]
+features = ["pq", "hazmat-kat-internals"]
 
 # Keep optimisations on for libFuzzer; debug assertions remain enabled by
 # default (cargo-fuzz overrides `[profile.release].debug-assertions = true`).

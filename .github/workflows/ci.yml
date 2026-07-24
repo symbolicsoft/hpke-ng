@@ -29,14 +29,14 @@ jobs:
         run: cargo fmt --check
       - name: cargo clippy (default)
         run: cargo clippy --all-targets -- -D warnings
-      - name: cargo clippy (pq + kat-internals)
-        run: cargo clippy --all-targets --features pq,kat-internals -- -D warnings
+      - name: cargo clippy (pq + hazmat-kat-internals)
+        run: cargo clippy --all-targets --features pq,hazmat-kat-internals -- -D warnings
       - name: cargo test
         run: cargo test
-      - name: cargo test (pq + kat-internals)
-        run: cargo test --features pq,kat-internals
-      - name: cargo test (pq + differential + kat-internals)
-        run: cargo test --features pq,differential,kat-internals
+      - name: cargo test (pq + hazmat-kat-internals)
+        run: cargo test --features pq,hazmat-kat-internals
+      - name: cargo test (pq + hazmat-differential + hazmat-kat-internals)
+        run: cargo test --features pq,hazmat-differential,hazmat-kat-internals
       - name: cargo build --release
         run: cargo build --release
 

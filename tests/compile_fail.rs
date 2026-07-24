@@ -1,7 +1,7 @@
 //! To regenerate the compile-fail `.stderr` fixtures after
 //! an intentional change (e.g. a toolchain bump), run:
 //!
-//! `TRYBUILD=overwrite cargo test --features pq,kat-internals --test compile_fail`
+//! `TRYBUILD=overwrite cargo test --features pq,hazmat-kat-internals --test compile_fail`
 //!
 #[test]
 fn compile_fail() {

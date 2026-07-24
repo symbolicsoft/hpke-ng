@@ -36,9 +36,14 @@ default       = ["std"]
 std           = ["subtle/std", "aes-gcm/std", "chacha20poly1305/std"]
 pq            = ["dep:ml-kem", "dep:x-wing", "dep:shake"]
 serde         = ["dep:serde"]
-differential  = []
-comparative   = ["pq"]
-kat-internals = []
+# The two `hazmat-*` features expose secret internals (raw AEAD keys,
+# exporter secrets, deterministic ephemeral-key injection) for the KAT and
+# differential test harnesses. Never enable them in production builds:
+# Cargo feature unification means any crate in the dependency graph that
+# turns them on enables them for every user of hpke-ng in that build.
+hazmat-differential  = []
+comparative          = ["pq"]
+hazmat-kat-internals = []
 
 [dev-dependencies]
 hpke-rs             = { version = "0.6", features = ["std", "rustcrypto", "hpke-test", "hpke-test-prng", "hazmat"] }
@@ -59,7 +64,7 @@ codegen-units = 1
 
 [[test]]
 name = "kat"
-required-features = ["kat-internals"]
+required-features = ["hazmat-kat-internals"]
 
 [[test]]
 name = "compile_fail"
