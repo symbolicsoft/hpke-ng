@@ -289,17 +289,21 @@ macro_rules! ml_kem_variant {
 			}
 		}
 
-		#[doc = concat!("Private (decapsulation) key for `", $variant, "` — 64-byte `d || z` seed plus expanded `dk`.")]
+		#[doc = concat!("Private (decapsulation) key for `", $variant, "` — 64-byte `d || z` seed plus expanded `dk`. The `dk` is wrapped in `Option` so `zeroize()` can drop it and trigger its zeroize-on-drop, mirroring [`XWingPrivateKey`].")]
 		pub struct $sk_wrap {
-			dk: $dk,
+			dk: Option<$dk>,
 			seed: [u8; 64],
 		}
 
 		impl Zeroize for $sk_wrap {
 			fn zeroize(&mut self) {
 				self.seed.zeroize();
-				// The expanded `dk` zeroizes via its own `Drop`
-				// (requires the `ml-kem/zeroize` feature, enabled in Cargo.toml).
+				// Dropping the expanded `dk` triggers its zeroize-on-drop
+				// (requires the `ml-kem/zeroize` feature, enabled in
+				// Cargo.toml). Without this, a manual `zeroize()` would scrub
+				// the seed but leave the fully expanded decapsulation key
+				// usable in memory until drop.
+				self.dk = None;
 			}
 		}
 
@@ -376,12 +380,17 @@ macro_rules! ml_kem_variant {
 				sk_r: &Self::PrivateKey,
 			) -> Result<Self::SharedSecret, HpkeError> {
 				use ml_kem::kem::Decapsulate as _;
+				// `dk` is populated by every constructor and only cleared by
+				// `Zeroize::zeroize()`; reaching `decap` after a manual
+				// `zeroize` is a use-after-zeroize at the call site, so
+				// reject explicitly rather than panicking.
+				let dk = sk_r.dk.as_ref().ok_or(HpkeError::DecapError)?;
 				let ct: $ct = enc
 					.0
 					.as_slice()
 					.try_into()
 					.map_err(|_| HpkeError::InvalidEncappedKey)?;
-				let mut ss = sk_r.dk.decapsulate(&ct);
+				let mut ss = dk.decapsulate(&ct);
 				let out = MlKemSharedSecret(ss.to_vec());
 				// Scrub the upstream shared-secret array (see `encap`).
 				ss.zeroize();
@@ -436,7 +445,7 @@ macro_rules! ml_kem_variant {
 			let ek = dk.encapsulation_key().clone();
 			let ek_bytes: Vec<u8> = ek.to_bytes().to_vec();
 			(
-				$sk_wrap { dk, seed },
+				$sk_wrap { dk: Some(dk), seed },
 				$pk_wrap {
 					bytes: ek_bytes,
 					parsed: ek,
@@ -557,4 +566,29 @@ mod tests {
 	}
 	ml_kem_derive_seed_test!(ml_kem_768_derive_key_pair_seed_invariants, MlKem768);
 	ml_kem_derive_seed_test!(ml_kem_1024_derive_key_pair_seed_invariants, MlKem1024);
+
+	/// A manual `zeroize()` must scrub the seed AND drop the cached expanded
+	/// decapsulation key; a subsequent `decap` is a use-after-zeroize and
+	/// must fail with `DecapError` rather than succeeding against expanded
+	/// key material that survived the scrub.
+	macro_rules! zeroize_disables_decap_test {
+		($name:ident, $kem:ty) => {
+			#[test]
+			fn $name() {
+				let mut os_rng = OsRng;
+				let mut rng = os_rng.unwrap_mut();
+				let (mut sk_r, pk_r) = <$kem>::generate(&mut rng).unwrap();
+				let (_, enc) = <$kem>::encap(&mut rng, &pk_r).unwrap();
+				sk_r.zeroize();
+				assert!(sk_r.seed.iter().all(|&b| b == 0));
+				assert!(matches!(
+					<$kem>::decap(&enc, &sk_r),
+					Err(HpkeError::DecapError)
+				));
+			}
+		};
+	}
+	zeroize_disables_decap_test!(xwing_zeroize_disables_decap, XWingDraft06);
+	zeroize_disables_decap_test!(ml_kem_768_zeroize_disables_decap, MlKem768);
+	zeroize_disables_decap_test!(ml_kem_1024_zeroize_disables_decap, MlKem1024);
 }
