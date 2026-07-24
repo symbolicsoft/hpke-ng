@@ -9,12 +9,13 @@ A clean-slate Rust implementation of [HPKE (RFC 9180)](https://www.rfc-editor.or
 
 ```rust
 use hpke_ng::*;
-use rand_core::OsRng;
+use rand::rngs::SysRng;
+use rand_core::UnwrapErr;
 
 type Suite = Hpke<DhKemX25519HkdfSha256, HkdfSha256, ChaCha20Poly1305>;
 
-let mut os = OsRng;
-let mut rng = os.unwrap_mut();
+let mut os = SysRng;
+let mut rng = UnwrapErr(&mut os);
 let (sk_r, pk_r) = DhKemX25519HkdfSha256::generate(&mut rng)?;
 let (enc, ct)  = Suite::seal_base(&mut rng, &pk_r, b"info", b"aad", b"hello")?;
 let pt         = Suite::open_base(&enc, &sk_r, b"info", b"aad", &ct)?;

@@ -3,7 +3,7 @@
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 
-use rand_core::{CryptoRng, RngCore};
+use rand_core::CryptoRng;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::HpkeError;
@@ -12,31 +12,6 @@ use crate::kdf::{
 };
 use crate::kem::{AuthKem, Kem};
 use crate::sealed::Sealed;
-
-mod rand_compat {
-	use rand_core::{CryptoRng, RngCore};
-
-	/// Wraps a `rand_core 0.9` RNG so it satisfies `rand_core 0.6` traits used
-	/// by older `RustCrypto` curve crates (`p256`, `p384`, `p521`, `k256`).
-	pub(crate) struct RngCompat<'a, R: RngCore + CryptoRng>(pub(crate) &'a mut R);
-
-	impl<R: RngCore + CryptoRng> rand_core_06::RngCore for RngCompat<'_, R> {
-		fn next_u32(&mut self) -> u32 {
-			self.0.next_u32()
-		}
-		fn next_u64(&mut self) -> u64 {
-			self.0.next_u64()
-		}
-		fn fill_bytes(&mut self, dest: &mut [u8]) {
-			self.0.fill_bytes(dest);
-		}
-		fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand_core_06::Error> {
-			self.fill_bytes(dest);
-			Ok(())
-		}
-	}
-	impl<R: RngCore + CryptoRng> rand_core_06::CryptoRng for RngCompat<'_, R> {}
-}
 
 /// Internal Diffie-Hellman primitive trait. Each curve provides one impl.
 ///
@@ -57,7 +32,7 @@ pub trait DiffieHellman: Sealed + 'static {
 	type PrivateKey: Zeroize + ZeroizeOnDrop;
 
 	/// Generate a fresh key pair using the provided RNG.
-	fn generate<R: CryptoRng + RngCore>(rng: &mut R) -> (Self::PrivateKey, Self::PublicKey);
+	fn generate<R: CryptoRng>(rng: &mut R) -> (Self::PrivateKey, Self::PublicKey);
 	/// Deterministically derive a key pair from input keying material.
 	fn derive(ikm: &[u8]) -> Result<(Self::PrivateKey, Self::PublicKey), HpkeError>;
 	/// Perform the Diffie-Hellman operation.
@@ -281,17 +256,18 @@ macro_rules! nist_curve {
 			type PublicKey = $pk_wrap;
 			type PrivateKey = $sk_wrap;
 
-			fn generate<R: CryptoRng + RngCore>(
+			fn generate<R: CryptoRng>(
 				rng: &mut R,
 			) -> (Self::PrivateKey, Self::PublicKey) {
-				let sk = $cn::SecretKey::random(&mut rand_compat::RngCompat(rng));
+				use $cn::elliptic_curve::Generate;
+				let sk = $cn::SecretKey::generate_from_rng(rng);
 				let pk = sk.public_key();
 				($sk_wrap(sk), $make_pk(pk))
 			}
 
 			fn derive(ikm: &[u8]) -> Result<(Self::PrivateKey, Self::PublicKey), HpkeError> {
 				let bytes = derive_p_curve_sk::<Self, $kdf>(ikm, $nsk, $bitmask)?;
-				let sk = $cn::SecretKey::from_bytes($cn::FieldBytes::from_slice(&bytes))
+				let sk = $cn::SecretKey::from_slice(&bytes)
 					.map_err(|_| HpkeError::InvalidPrivateKey)?;
 				let pk = sk.public_key();
 				Ok(($sk_wrap(sk), $make_pk(pk)))
@@ -332,7 +308,7 @@ macro_rules! nist_curve {
 				if b.len() != $nsk {
 					return Err(HpkeError::InvalidPrivateKey);
 				}
-				$cn::SecretKey::from_bytes($cn::FieldBytes::from_slice(b))
+				$cn::SecretKey::from_slice(b)
 					.map($sk_wrap)
 					.map_err(|_| HpkeError::InvalidPrivateKey)
 			}
@@ -368,8 +344,8 @@ macro_rules! nist_curve {
 		}
 
 		fn $make_pk(pk: $cn::PublicKey) -> $pk_wrap {
-			use $cn::elliptic_curve::sec1::ToEncodedPoint;
-			let encoded = pk.to_encoded_point(false).as_bytes().to_vec();
+			use $cn::elliptic_curve::sec1::ToSec1Point;
+			let encoded = pk.to_sec1_point(false).as_bytes().to_vec();
 			$pk_wrap { pk, encoded }
 		}
 
@@ -384,7 +360,7 @@ macro_rules! nist_curve {
 				// invokes its zeroize-on-drop.
 				let mut dummy = [0u8; $nsk];
 				dummy[$nsk - 1] = 1;
-				let d = $cn::SecretKey::from_bytes($cn::FieldBytes::from_slice(&dummy))
+				let d = $cn::SecretKey::from_slice(&dummy)
 					.expect("scalar 1 is a valid secret key");
 				let _ = core::mem::replace(&mut self.0, d);
 			}
@@ -406,7 +382,7 @@ impl<D: DiffieHellman, H: Kdf> Kem for DhKem<D, H> {
 	type EncappedKey = DhEncappedKey;
 	type SharedSecret = DhSharedSecret;
 
-	fn generate<R: CryptoRng + RngCore>(
+	fn generate<R: CryptoRng>(
 		rng: &mut R,
 	) -> Result<(Self::PrivateKey, Self::PublicKey), HpkeError> {
 		let (sk, pk) = D::generate(rng);
@@ -420,7 +396,7 @@ impl<D: DiffieHellman, H: Kdf> Kem for DhKem<D, H> {
 		Ok((dh_sk, DhPublicKey(pk)))
 	}
 
-	fn encap<R: CryptoRng + RngCore>(
+	fn encap<R: CryptoRng>(
 		rng: &mut R,
 		pk_r: &Self::PublicKey,
 	) -> Result<(Self::SharedSecret, Self::EncappedKey), HpkeError> {
@@ -463,7 +439,7 @@ impl<D: DiffieHellman, H: Kdf> Kem for DhKem<D, H> {
 }
 
 impl<D: DiffieHellman, H: Kdf> AuthKem for DhKem<D, H> {
-	fn auth_encap<R: CryptoRng + RngCore>(
+	fn auth_encap<R: CryptoRng>(
 		rng: &mut R,
 		pk_r: &Self::PublicKey,
 		sk_s: &Self::PrivateKey,
@@ -487,7 +463,7 @@ impl<D: DiffieHellman, H: Kdf> AuthKem for DhKem<D, H> {
 	}
 }
 
-fn encap_with<D: DiffieHellman, H: Kdf, R: CryptoRng + RngCore>(
+fn encap_with<D: DiffieHellman, H: Kdf, R: CryptoRng>(
 	rng: &mut R,
 	pk_r: &DhPublicKey<D>,
 	sk_sender: Option<&DhPrivateKey<D>>,
@@ -590,7 +566,7 @@ impl DiffieHellman for X25519 {
 	type PublicKey = X25519PublicKeyWrap;
 	type PrivateKey = X25519PrivateKeyWrap;
 
-	fn generate<R: CryptoRng + RngCore>(rng: &mut R) -> (Self::PrivateKey, Self::PublicKey) {
+	fn generate<R: CryptoRng>(rng: &mut R) -> (Self::PrivateKey, Self::PublicKey) {
 		let mut bytes = Zeroizing::new([0u8; 32]);
 		rng.fill_bytes(&mut bytes[..]);
 		// RFC 7748 §5: store the X25519 scalar in clamped final form so that
@@ -706,7 +682,7 @@ pub struct X25519PrivateKeyWrap(x25519_dalek::StaticSecret);
 
 impl Zeroize for X25519PrivateKeyWrap {
 	fn zeroize(&mut self) {
-		self.0.zeroize();
+		let _ = core::mem::replace(&mut self.0, x25519_dalek::StaticSecret::from([0u8; 32]));
 	}
 }
 
@@ -831,7 +807,7 @@ impl DiffieHellman for X448 {
 	type PublicKey = X448PublicKeyWrap;
 	type PrivateKey = X448PrivateKeyWrap;
 
-	fn generate<R: CryptoRng + RngCore>(rng: &mut R) -> (Self::PrivateKey, Self::PublicKey) {
+	fn generate<R: CryptoRng>(rng: &mut R) -> (Self::PrivateKey, Self::PublicKey) {
 		let mut sk = Zeroizing::new([0u8; 56]);
 		rng.fill_bytes(&mut sk[..]);
 		// RFC 7748 §5: clamp the X448 scalar.
@@ -967,7 +943,8 @@ pub type DhKemX448HkdfSha512 = DhKem<X448, crate::HkdfSha512>;
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use rand_core::{OsRng, TryRngCore as _};
+	use rand::rngs::SysRng;
+	use rand_core::UnwrapErr;
 
 	// Roundtrip and auth-roundtrip coverage lives in `tests/roundtrip.rs`
 	// (one `#[test]` per `(mode, KEM, KDF, AEAD)` combination via macro).
@@ -980,8 +957,8 @@ mod tests {
 	fn x25519_rejects_small_order_zero_pk() {
 		type Suite = DhKem<X25519, crate::HkdfSha256>;
 		let pk_zero = Suite::pk_from_bytes(&[0u8; 32]).unwrap();
-		let mut os_rng = OsRng;
-		let r = Suite::encap(&mut os_rng.unwrap_mut(), &pk_zero);
+		let mut os_rng = SysRng;
+		let r = Suite::encap(&mut UnwrapErr(&mut os_rng), &pk_zero);
 		assert_eq!(r.err(), Some(HpkeError::EncapError));
 	}
 
@@ -1002,8 +979,8 @@ mod tests {
 			X448::sk_to_pk(&sk_u).as_ref(),
 			X448::sk_to_pk(&sk_c).as_ref()
 		);
-		let mut os_rng = OsRng;
-		let (_, pk_peer) = X448::generate(&mut os_rng.unwrap_mut());
+		let mut os_rng = SysRng;
+		let (_, pk_peer) = X448::generate(&mut UnwrapErr(&mut os_rng));
 		assert_eq!(
 			X448::dh(&sk_u, &pk_peer).unwrap(),
 			X448::dh(&sk_c, &pk_peer).unwrap(),
@@ -1069,8 +1046,8 @@ mod tests {
 	/// `kem_context` as a receiver deriving `pk_r` from `sk_r`.
 	#[test]
 	fn x25519_pk_from_bytes_masks_high_bit() {
-		let mut os_rng = OsRng;
-		let (_, pk_c) = X25519::generate(&mut os_rng.unwrap_mut());
+		let mut os_rng = SysRng;
+		let (_, pk_c) = X25519::generate(&mut UnwrapErr(&mut os_rng));
 		let mut tampered = [0u8; 32];
 		tampered.copy_from_slice(pk_c.as_ref());
 		tampered[31] |= 0x80;
@@ -1087,10 +1064,10 @@ mod tests {
 		($name:ident, $curve:ty, $cn:ident, $clen:expr) => {
 			#[test]
 			fn $name() {
-				use $cn::elliptic_curve::sec1::ToEncodedPoint;
-				let mut os_rng = OsRng;
-				let (_, pk) = <$curve>::generate(&mut os_rng.unwrap_mut());
-				let compressed = pk.pk.to_encoded_point(true);
+				use $cn::elliptic_curve::sec1::ToSec1Point;
+				let mut os_rng = SysRng;
+				let (_, pk) = <$curve>::generate(&mut UnwrapErr(&mut os_rng));
+				let compressed = pk.pk.to_sec1_point(true);
 				assert_eq!(compressed.as_bytes().len(), $clen);
 				assert!(matches!(
 					<$curve>::pk_from_bytes(compressed.as_bytes()),
@@ -1109,16 +1086,16 @@ mod tests {
 	/// is shared across all four NIST/secp256k1 curves via the macro.
 	#[test]
 	fn p256_pk_from_bytes_rejects_wrong_length_and_tag() {
-		use p256::elliptic_curve::sec1::ToEncodedPoint;
+		use p256::elliptic_curve::sec1::ToSec1Point;
 		for bad in [&[][..], &[0u8], &[0u8; 64], &[0u8; 66]] {
 			assert!(matches!(
 				P256::pk_from_bytes(bad),
 				Err(HpkeError::InvalidPublicKey)
 			));
 		}
-		let mut os_rng = OsRng;
-		let (_, pk) = P256::generate(&mut os_rng.unwrap_mut());
-		let mut tampered = pk.pk.to_encoded_point(false).as_bytes().to_vec();
+		let mut os_rng = SysRng;
+		let (_, pk) = P256::generate(&mut UnwrapErr(&mut os_rng));
+		let mut tampered = pk.pk.to_sec1_point(false).as_bytes().to_vec();
 		// Hybrid (0x06/0x07) has the right length but is not `Tag::Uncompressed`.
 		for tag in [0x06, 0x07] {
 			tampered[0] = tag;
@@ -1136,8 +1113,8 @@ mod tests {
 			#[test]
 			fn $name() {
 				type Suite = DhKem<$curve, $kdf>;
-				let mut os_rng = OsRng;
-				let mut rng = os_rng.unwrap_mut();
+				let mut os_rng = SysRng;
+				let mut rng = UnwrapErr(&mut os_rng);
 				let (sk_r, pk_r) = Suite::generate(&mut rng).unwrap();
 				let sk_bytes = Suite::sk_to_bytes(&sk_r);
 				assert_eq!(sk_bytes.len(), Suite::PRIVATE_KEY_LEN);
@@ -1168,8 +1145,8 @@ mod tests {
 		}
 
 		type Suite = DhKem<X25519, crate::HkdfSha256>;
-		let mut os_rng = OsRng;
-		let mut rng = os_rng.unwrap_mut();
+		let mut os_rng = SysRng;
+		let mut rng = UnwrapErr(&mut os_rng);
 
 		// `generate` produces clamped storage.
 		let (sk_gen, _) = Suite::generate(&mut rng).unwrap();

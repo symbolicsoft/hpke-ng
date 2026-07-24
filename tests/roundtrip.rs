@@ -7,7 +7,8 @@
 #![allow(non_snake_case)]
 
 use hpke_ng::*;
-use rand_core::{OsRng, TryRngCore as _};
+use rand::rngs::SysRng as OsRng;
+use rand_core::UnwrapErr;
 
 macro_rules! roundtrip_base_sealing {
 	($name:ident, $kem:ty, $kdf:ty, $aead:ty) => {
@@ -15,7 +16,7 @@ macro_rules! roundtrip_base_sealing {
 		fn $name() {
 			type Suite = Hpke<$kem, $kdf, $aead>;
 			let mut os_rng = OsRng;
-			let mut rng = os_rng.unwrap_mut();
+			let mut rng = UnwrapErr(&mut os_rng);
 			let (sk_r, pk_r) = <$kem as Kem>::generate(&mut rng).unwrap();
 
 			let (enc, ct) = Suite::seal_base(&mut rng, &pk_r, b"info", b"aad", b"hello").unwrap();
@@ -47,7 +48,7 @@ macro_rules! roundtrip_psk_sealing {
 		fn $name() {
 			type Suite = Hpke<$kem, $kdf, $aead>;
 			let mut os_rng = OsRng;
-			let mut rng = os_rng.unwrap_mut();
+			let mut rng = UnwrapErr(&mut os_rng);
 			let (sk_r, pk_r) = <$kem as Kem>::generate(&mut rng).unwrap();
 			let psk = [0xCDu8; 32];
 			let (enc, ct) =
@@ -72,7 +73,7 @@ macro_rules! roundtrip_auth_sealing {
 		fn $name() {
 			type Suite = Hpke<$kem, $kdf, $aead>;
 			let mut os_rng = OsRng;
-			let mut rng = os_rng.unwrap_mut();
+			let mut rng = UnwrapErr(&mut os_rng);
 			let (sk_r, pk_r) = <$kem as Kem>::generate(&mut rng).unwrap();
 			let (sk_s, pk_s) = <$kem as Kem>::generate(&mut rng).unwrap();
 			let (enc, ct) = Suite::seal_auth(&mut rng, &pk_r, b"i", b"a", b"hi", &sk_s).unwrap();
@@ -90,7 +91,7 @@ macro_rules! roundtrip_auth_psk_sealing {
 		fn $name() {
 			type Suite = Hpke<$kem, $kdf, $aead>;
 			let mut os_rng = OsRng;
-			let mut rng = os_rng.unwrap_mut();
+			let mut rng = UnwrapErr(&mut os_rng);
 			let (sk_r, pk_r) = <$kem as Kem>::generate(&mut rng).unwrap();
 			let (sk_s, pk_s) = <$kem as Kem>::generate(&mut rng).unwrap();
 			let psk = [0xEFu8; 32];
@@ -213,7 +214,7 @@ mod pq {
 fn psk_inconsistent_rejected() {
 	type Suite = Hpke<DhKemX25519HkdfSha256, HkdfSha256, ChaCha20Poly1305>;
 	let mut os_rng = OsRng;
-	let mut rng = os_rng.unwrap_mut();
+	let mut rng = UnwrapErr(&mut os_rng);
 	let (_sk_r, pk_r) = DhKemX25519HkdfSha256::generate(&mut rng).unwrap();
 	assert_eq!(
 		Suite::seal_psk(&mut rng, &pk_r, b"i", b"a", b"x", &[0u8; 32], b"").unwrap_err(),
@@ -225,7 +226,7 @@ fn psk_inconsistent_rejected() {
 fn psk_missing_in_psk_mode_rejected() {
 	type Suite = Hpke<DhKemX25519HkdfSha256, HkdfSha256, ChaCha20Poly1305>;
 	let mut os_rng = OsRng;
-	let mut rng = os_rng.unwrap_mut();
+	let mut rng = UnwrapErr(&mut os_rng);
 	let (_, pk_r) = DhKemX25519HkdfSha256::generate(&mut rng).unwrap();
 	assert_eq!(
 		Suite::seal_psk(&mut rng, &pk_r, b"i", b"a", b"x", b"", b"").unwrap_err(),
@@ -446,7 +447,7 @@ macro_rules! roundtrip_export_only_base {
 		fn $name() {
 			type Suite = Hpke<$kem, $kdf, ExportOnly>;
 			let mut os_rng = OsRng;
-			let mut rng = os_rng.unwrap_mut();
+			let mut rng = UnwrapErr(&mut os_rng);
 			let (sk_r, pk_r) = <$kem as Kem>::generate(&mut rng).unwrap();
 			for &len in &[16usize, 32, 64] {
 				let (enc, sender) =
@@ -466,7 +467,7 @@ macro_rules! roundtrip_export_only_psk {
 		fn $name() {
 			type Suite = Hpke<$kem, $kdf, ExportOnly>;
 			let mut os_rng = OsRng;
-			let mut rng = os_rng.unwrap_mut();
+			let mut rng = UnwrapErr(&mut os_rng);
 			let (sk_r, pk_r) = <$kem as Kem>::generate(&mut rng).unwrap();
 			let psk = [0xA5u8; 32];
 			let (enc, sender) =
@@ -484,7 +485,7 @@ macro_rules! roundtrip_export_only_auth {
 		fn $name() {
 			type Suite = Hpke<$kem, $kdf, ExportOnly>;
 			let mut os_rng = OsRng;
-			let mut rng = os_rng.unwrap_mut();
+			let mut rng = UnwrapErr(&mut os_rng);
 			let (sk_r, pk_r) = <$kem as Kem>::generate(&mut rng).unwrap();
 			let (sk_s, pk_s) = <$kem as Kem>::generate(&mut rng).unwrap();
 			let (enc, sender) =
@@ -502,7 +503,7 @@ macro_rules! roundtrip_export_only_auth_psk {
 		fn $name() {
 			type Suite = Hpke<$kem, $kdf, ExportOnly>;
 			let mut os_rng = OsRng;
-			let mut rng = os_rng.unwrap_mut();
+			let mut rng = UnwrapErr(&mut os_rng);
 			let (sk_r, pk_r) = <$kem as Kem>::generate(&mut rng).unwrap();
 			let (sk_s, pk_s) = <$kem as Kem>::generate(&mut rng).unwrap();
 			let psk = [0xB7u8; 32];
