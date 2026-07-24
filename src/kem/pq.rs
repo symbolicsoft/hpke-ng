@@ -575,8 +575,8 @@ mod tests {
 		($name:ident, $kem:ty) => {
 			#[test]
 			fn $name() {
-				let mut os_rng = OsRng;
-				let mut rng = os_rng.unwrap_mut();
+				let mut os_rng = SysRng;
+				let mut rng = UnwrapErr(&mut os_rng);
 				let (mut sk_r, pk_r) = <$kem>::generate(&mut rng).unwrap();
 				let (_, enc) = <$kem>::encap(&mut rng, &pk_r).unwrap();
 				sk_r.zeroize();
