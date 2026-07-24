@@ -84,8 +84,7 @@ use hpke::{
 	kem::{DhP256HkdfSha256 as RhP256, X25519HkdfSha256 as RhX25519, XWing as RhXWing},
 };
 
-use rand_core::SeedableRng;
-use rand_core::TryRngCore as _;
+use rand::{Rng as _, SeedableRng};
 
 /// Deterministic-PRNG seed for hpke-rs.
 ///
@@ -111,11 +110,9 @@ fn quick() -> Criterion {
 
 /// RhChaCha20Rng
 ///
-/// rust-hpke v0.14 upgraded to rand_core 0.9's TryRng-based CryptoRng. Our rand_chacha dep
-/// resolves to a different SemVer instance, so ChaCha20Rng does not directly satisfy
-/// `hpke::rand_core::CryptoRng`. This newtype bridges the two: it implements
-/// `hpke::rand_core::{TryRng, TryCryptoRng}` by delegating to ChaCha20Rng's RngCore impl,
-/// giving rust-hpke calls the same deterministic ChaCha20 RNG used everywhere else.
+/// rust-hpke and rand_chacha now both use `rand_core 0.10`. This newtype keeps
+/// the benchmark's existing call sites explicit while delegating to the shared
+/// deterministic ChaCha20 RNG.
 ///
 /// Usage: `&mut RhChaCha20Rng(&mut prng)` wherever rust-hpke needs a csprng.
 struct RhChaCha20Rng<'a>(&'a mut rand_chacha::ChaCha20Rng);
@@ -124,16 +121,15 @@ impl hpke::rand_core::TryRng for RhChaCha20Rng<'_> {
 	type Error = core::convert::Infallible;
 
 	fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
-		Ok(rand_core::RngCore::next_u32(&mut self.0))
+		Ok(self.0.next_u32())
 	}
 
 	fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
-		Ok(rand_core::RngCore::next_u64(&mut self.0))
+		Ok(self.0.next_u64())
 	}
 
 	fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), Self::Error> {
-		// Delegate to ChaCha20Rng's RngCore::fill_bytes (hpke-ng's rand_core instance).
-		rand_core::RngCore::fill_bytes(&mut self.0, dest);
+		self.0.fill_bytes(dest);
 		Ok(())
 	}
 }
@@ -160,7 +156,7 @@ fn bench_kem_x25519(c: &mut Criterion) {
 
 	// generate for hpke-ng, hpke-rs, rust-hpke
 	g.bench_function("hpke_ng/generate", |b| {
-		b.iter(|| ng::DhKemX25519HkdfSha256::generate(&mut prng.unwrap_mut()).unwrap())
+		b.iter(|| ng::DhKemX25519HkdfSha256::generate(&mut prng).unwrap())
 	});
 	{
 		let mut rs = HpkeRs::<HpkeRustCrypto>::new(
@@ -200,11 +196,9 @@ fn bench_kem_x25519(c: &mut Criterion) {
 
 	// hpke-ng encap
 	{
-		let (_, pk_ng) = ng::DhKemX25519HkdfSha256::generate(&mut prng.unwrap_mut()).unwrap();
+		let (_, pk_ng) = ng::DhKemX25519HkdfSha256::generate(&mut prng).unwrap();
 		g.bench_function("hpke_ng/encap", |b| {
-			b.iter(|| {
-				ng::DhKemX25519HkdfSha256::encap(&mut prng.unwrap_mut(), black_box(&pk_ng)).unwrap()
-			})
+			b.iter(|| ng::DhKemX25519HkdfSha256::encap(&mut prng, black_box(&pk_ng)).unwrap())
 		});
 	}
 
@@ -244,8 +238,8 @@ fn bench_kem_x25519(c: &mut Criterion) {
 
 	// hpke-ng decap
 	{
-		let (sk_ng, pk_ng) = ng::DhKemX25519HkdfSha256::generate(&mut prng.unwrap_mut()).unwrap();
-		let (_, enc_ng) = ng::DhKemX25519HkdfSha256::encap(&mut prng.unwrap_mut(), &pk_ng).unwrap();
+		let (sk_ng, pk_ng) = ng::DhKemX25519HkdfSha256::generate(&mut prng).unwrap();
+		let (_, enc_ng) = ng::DhKemX25519HkdfSha256::encap(&mut prng, &pk_ng).unwrap();
 		g.bench_function("hpke_ng/decap", |b| {
 			b.iter(|| ng::DhKemX25519HkdfSha256::decap(black_box(&enc_ng), &sk_ng).unwrap())
 		});
@@ -299,7 +293,7 @@ fn bench_kem_p256(c: &mut Criterion) {
 	let mut prng = rand_chacha::ChaCha20Rng::from_seed([0x42u8; 32]);
 
 	g.bench_function("hpke_ng/generate", |b| {
-		b.iter(|| ng::DhKemP256HkdfSha256::generate(&mut prng.unwrap_mut()).unwrap())
+		b.iter(|| ng::DhKemP256HkdfSha256::generate(&mut prng).unwrap())
 	});
 	{
 		let mut rs = HpkeRs::<HpkeRustCrypto>::new(
@@ -337,11 +331,9 @@ fn bench_kem_p256(c: &mut Criterion) {
 	});
 
 	{
-		let (_, pk_ng) = ng::DhKemP256HkdfSha256::generate(&mut prng.unwrap_mut()).unwrap();
+		let (_, pk_ng) = ng::DhKemP256HkdfSha256::generate(&mut prng).unwrap();
 		g.bench_function("hpke_ng/encap", |b| {
-			b.iter(|| {
-				ng::DhKemP256HkdfSha256::encap(&mut prng.unwrap_mut(), black_box(&pk_ng)).unwrap()
-			})
+			b.iter(|| ng::DhKemP256HkdfSha256::encap(&mut prng, black_box(&pk_ng)).unwrap())
 		});
 	}
 	{
@@ -376,8 +368,8 @@ fn bench_kem_p256(c: &mut Criterion) {
 	}
 
 	{
-		let (sk_ng, pk_ng) = ng::DhKemP256HkdfSha256::generate(&mut prng.unwrap_mut()).unwrap();
-		let (_, enc_ng) = ng::DhKemP256HkdfSha256::encap(&mut prng.unwrap_mut(), &pk_ng).unwrap();
+		let (sk_ng, pk_ng) = ng::DhKemP256HkdfSha256::generate(&mut prng).unwrap();
+		let (_, enc_ng) = ng::DhKemP256HkdfSha256::encap(&mut prng, &pk_ng).unwrap();
 		g.bench_function("hpke_ng/decap", |b| {
 			b.iter(|| ng::DhKemP256HkdfSha256::decap(black_box(&enc_ng), &sk_ng).unwrap())
 		});
@@ -428,7 +420,7 @@ fn bench_kem_k256(c: &mut Criterion) {
 	let mut prng = rand_chacha::ChaCha20Rng::from_seed([0x42u8; 32]);
 
 	g.bench_function("hpke_ng/generate", |b| {
-		b.iter(|| ng::DhKemK256HkdfSha256::generate(&mut prng.unwrap_mut()).unwrap())
+		b.iter(|| ng::DhKemK256HkdfSha256::generate(&mut prng).unwrap())
 	});
 	{
 		let mut rs = HpkeRs::<HpkeRustCrypto>::new(
@@ -460,16 +452,14 @@ fn bench_kem_k256(c: &mut Criterion) {
 	}
 
 	{
-		let (_, pk_ng) = ng::DhKemK256HkdfSha256::generate(&mut prng.unwrap_mut()).unwrap();
+		let (_, pk_ng) = ng::DhKemK256HkdfSha256::generate(&mut prng).unwrap();
 		g.bench_function("hpke_ng/encap", |b| {
-			b.iter(|| {
-				ng::DhKemK256HkdfSha256::encap(&mut prng.unwrap_mut(), black_box(&pk_ng)).unwrap()
-			})
+			b.iter(|| ng::DhKemK256HkdfSha256::encap(&mut prng, black_box(&pk_ng)).unwrap())
 		});
 	}
 	{
-		let (sk_ng, pk_ng) = ng::DhKemK256HkdfSha256::generate(&mut prng.unwrap_mut()).unwrap();
-		let (_, enc_ng) = ng::DhKemK256HkdfSha256::encap(&mut prng.unwrap_mut(), &pk_ng).unwrap();
+		let (sk_ng, pk_ng) = ng::DhKemK256HkdfSha256::generate(&mut prng).unwrap();
+		let (_, enc_ng) = ng::DhKemK256HkdfSha256::encap(&mut prng, &pk_ng).unwrap();
 		g.bench_function("hpke_ng/decap", |b| {
 			b.iter(|| ng::DhKemK256HkdfSha256::decap(black_box(&enc_ng), &sk_ng).unwrap())
 		});
@@ -487,7 +477,7 @@ fn bench_kem_xwing(c: &mut Criterion) {
 	let mut prng = rand_chacha::ChaCha20Rng::from_seed([0x42u8; 32]);
 
 	g.bench_function("hpke_ng/generate", |b| {
-		b.iter(|| ng::XWingDraft06::generate(&mut prng.unwrap_mut()).unwrap())
+		b.iter(|| ng::XWingDraft06::generate(&mut prng).unwrap())
 	});
 	{
 		let mut rs = HpkeRs::<HpkeRustCrypto>::new(
@@ -525,9 +515,9 @@ fn bench_kem_xwing(c: &mut Criterion) {
 	});
 
 	{
-		let (_, pk_ng) = ng::XWingDraft06::generate(&mut prng.unwrap_mut()).unwrap();
+		let (_, pk_ng) = ng::XWingDraft06::generate(&mut prng).unwrap();
 		g.bench_function("hpke_ng/encap", |b| {
-			b.iter(|| ng::XWingDraft06::encap(&mut prng.unwrap_mut(), black_box(&pk_ng)).unwrap())
+			b.iter(|| ng::XWingDraft06::encap(&mut prng, black_box(&pk_ng)).unwrap())
 		});
 	}
 	{
@@ -562,8 +552,8 @@ fn bench_kem_xwing(c: &mut Criterion) {
 	}
 
 	{
-		let (sk_ng, pk_ng) = ng::XWingDraft06::generate(&mut prng.unwrap_mut()).unwrap();
-		let (_, enc_ng) = ng::XWingDraft06::encap(&mut prng.unwrap_mut(), &pk_ng).unwrap();
+		let (sk_ng, pk_ng) = ng::XWingDraft06::generate(&mut prng).unwrap();
+		let (_, enc_ng) = ng::XWingDraft06::encap(&mut prng, &pk_ng).unwrap();
 		g.bench_function("hpke_ng/decap", |b| {
 			b.iter(|| ng::XWingDraft06::decap(black_box(&enc_ng), &sk_ng).unwrap())
 		});
@@ -614,7 +604,7 @@ fn bench_kem_mlkem768(c: &mut Criterion) {
 	let mut prng = rand_chacha::ChaCha20Rng::from_seed([0x42u8; 32]);
 
 	g.bench_function("hpke_ng/generate", |b| {
-		b.iter(|| ng::MlKem768::generate(&mut prng.unwrap_mut()).unwrap())
+		b.iter(|| ng::MlKem768::generate(&mut prng).unwrap())
 	});
 	{
 		let mut rs = HpkeRs::<HpkeRustCrypto>::new(
@@ -649,9 +639,9 @@ fn bench_kem_mlkem768(c: &mut Criterion) {
 	}
 
 	{
-		let (_, pk_ng) = ng::MlKem768::generate(&mut prng.unwrap_mut()).unwrap();
+		let (_, pk_ng) = ng::MlKem768::generate(&mut prng).unwrap();
 		g.bench_function("hpke_ng/encap", |b| {
-			b.iter(|| ng::MlKem768::encap(&mut prng.unwrap_mut(), black_box(&pk_ng)).unwrap())
+			b.iter(|| ng::MlKem768::encap(&mut prng, black_box(&pk_ng)).unwrap())
 		});
 	}
 	{
@@ -672,8 +662,8 @@ fn bench_kem_mlkem768(c: &mut Criterion) {
 	}
 
 	{
-		let (sk_ng, pk_ng) = ng::MlKem768::generate(&mut prng.unwrap_mut()).unwrap();
-		let (_, enc_ng) = ng::MlKem768::encap(&mut prng.unwrap_mut(), &pk_ng).unwrap();
+		let (sk_ng, pk_ng) = ng::MlKem768::generate(&mut prng).unwrap();
+		let (_, enc_ng) = ng::MlKem768::encap(&mut prng, &pk_ng).unwrap();
 		g.bench_function("hpke_ng/decap", |b| {
 			b.iter(|| ng::MlKem768::decap(black_box(&enc_ng), &sk_ng).unwrap())
 		});
@@ -707,7 +697,7 @@ fn bench_kem_mlkem1024(c: &mut Criterion) {
 	let mut prng = rand_chacha::ChaCha20Rng::from_seed([0x42u8; 32]);
 
 	g.bench_function("hpke_ng/generate", |b| {
-		b.iter(|| ng::MlKem1024::generate(&mut prng.unwrap_mut()).unwrap())
+		b.iter(|| ng::MlKem1024::generate(&mut prng).unwrap())
 	});
 	{
 		let mut rs = HpkeRs::<HpkeRustCrypto>::new(
@@ -739,9 +729,9 @@ fn bench_kem_mlkem1024(c: &mut Criterion) {
 	}
 
 	{
-		let (_, pk_ng) = ng::MlKem1024::generate(&mut prng.unwrap_mut()).unwrap();
+		let (_, pk_ng) = ng::MlKem1024::generate(&mut prng).unwrap();
 		g.bench_function("hpke_ng/encap", |b| {
-			b.iter(|| ng::MlKem1024::encap(&mut prng.unwrap_mut(), black_box(&pk_ng)).unwrap())
+			b.iter(|| ng::MlKem1024::encap(&mut prng, black_box(&pk_ng)).unwrap())
 		});
 	}
 	{
@@ -762,8 +752,8 @@ fn bench_kem_mlkem1024(c: &mut Criterion) {
 	}
 
 	{
-		let (sk_ng, pk_ng) = ng::MlKem1024::generate(&mut prng.unwrap_mut()).unwrap();
-		let (_, enc_ng) = ng::MlKem1024::encap(&mut prng.unwrap_mut(), &pk_ng).unwrap();
+		let (sk_ng, pk_ng) = ng::MlKem1024::generate(&mut prng).unwrap();
+		let (_, enc_ng) = ng::MlKem1024::encap(&mut prng, &pk_ng).unwrap();
 		g.bench_function("hpke_ng/decap", |b| {
 			b.iter(|| ng::MlKem1024::decap(black_box(&enc_ng), &sk_ng).unwrap())
 		});
@@ -799,9 +789,8 @@ fn bench_kem_mlkem1024(c: &mut Criterion) {
 fn bench_setup_x25519_chacha(c: &mut Criterion) {
 	type Suite = ng::Hpke<ng::DhKemX25519HkdfSha256, ng::HkdfSha256, ng::ChaCha20Poly1305>;
 	let mut prng = rand_chacha::ChaCha20Rng::from_seed([0x42u8; 32]);
-	let (sk_ng, pk_ng) = ng::DhKemX25519HkdfSha256::generate(&mut prng.unwrap_mut()).unwrap();
-	let (enc_ng, _ctx_ng) =
-		Suite::setup_sender_base(&mut prng.unwrap_mut(), &pk_ng, b"info").unwrap();
+	let (sk_ng, pk_ng) = ng::DhKemX25519HkdfSha256::generate(&mut prng).unwrap();
+	let (enc_ng, _ctx_ng) = Suite::setup_sender_base(&mut prng, &pk_ng, b"info").unwrap();
 
 	let mut rs = HpkeRs::<HpkeRustCrypto>::new(
 		Mode::Base,
@@ -819,9 +808,7 @@ fn bench_setup_x25519_chacha(c: &mut Criterion) {
 
 	// `setup_sender` group
 	g.bench_function("hpke_ng", |b| {
-		b.iter(|| {
-			Suite::setup_sender_base(&mut prng.unwrap_mut(), black_box(&pk_ng), b"info").unwrap()
-		})
+		b.iter(|| Suite::setup_sender_base(&mut prng, black_box(&pk_ng), b"info").unwrap())
 	});
 	g.bench_function("hpke_rs", |b| {
 		b.iter(|| {
@@ -892,14 +879,7 @@ fn bench_setup_x25519_chacha(c: &mut Criterion) {
 	rs_psk.seed(&SEED).unwrap();
 	g.bench_function("hpke_ng", |b| {
 		b.iter(|| {
-			Suite::setup_sender_psk(
-				&mut prng.unwrap_mut(),
-				black_box(&pk_ng),
-				b"info",
-				&psk,
-				psk_id,
-			)
-			.unwrap()
+			Suite::setup_sender_psk(&mut prng, black_box(&pk_ng), b"info", &psk, psk_id).unwrap()
 		})
 	});
 	g.bench_function("hpke_rs", |b| {
@@ -932,7 +912,7 @@ fn bench_setup_x25519_chacha(c: &mut Criterion) {
 fn bench_setup_x25519_aes128(c: &mut Criterion) {
 	type Suite = ng::Hpke<ng::DhKemX25519HkdfSha256, ng::HkdfSha256, ng::Aes128Gcm>;
 	let mut prng = rand_chacha::ChaCha20Rng::from_seed([0x42u8; 32]);
-	let (_, pk_ng) = ng::DhKemX25519HkdfSha256::generate(&mut prng.unwrap_mut()).unwrap();
+	let (_, pk_ng) = ng::DhKemX25519HkdfSha256::generate(&mut prng).unwrap();
 
 	let mut rs = HpkeRs::<HpkeRustCrypto>::new(
 		Mode::Base,
@@ -946,9 +926,7 @@ fn bench_setup_x25519_aes128(c: &mut Criterion) {
 
 	let mut g = c.benchmark_group("x25519_aes128/setup_sender_base");
 	g.bench_function("hpke_ng", |b| {
-		b.iter(|| {
-			Suite::setup_sender_base(&mut prng.unwrap_mut(), black_box(&pk_ng), b"info").unwrap()
-		})
+		b.iter(|| Suite::setup_sender_base(&mut prng, black_box(&pk_ng), b"info").unwrap())
 	});
 	rs.seed(&SEED).unwrap();
 	g.bench_function("hpke_rs", |b| {
@@ -974,7 +952,7 @@ fn bench_setup_x25519_aes128(c: &mut Criterion) {
 fn bench_setup_x25519_aes256(c: &mut Criterion) {
 	type Suite = ng::Hpke<ng::DhKemX25519HkdfSha256, ng::HkdfSha256, ng::Aes256Gcm>;
 	let mut prng = rand_chacha::ChaCha20Rng::from_seed([0x42u8; 32]);
-	let (_, pk_ng) = ng::DhKemX25519HkdfSha256::generate(&mut prng.unwrap_mut()).unwrap();
+	let (_, pk_ng) = ng::DhKemX25519HkdfSha256::generate(&mut prng).unwrap();
 
 	let mut rs = HpkeRs::<HpkeRustCrypto>::new(
 		Mode::Base,
@@ -988,9 +966,7 @@ fn bench_setup_x25519_aes256(c: &mut Criterion) {
 
 	let mut g = c.benchmark_group("x25519_aes256/setup_sender_base");
 	g.bench_function("hpke_ng", |b| {
-		b.iter(|| {
-			Suite::setup_sender_base(&mut prng.unwrap_mut(), black_box(&pk_ng), b"info").unwrap()
-		})
+		b.iter(|| Suite::setup_sender_base(&mut prng, black_box(&pk_ng), b"info").unwrap())
 	});
 	rs.seed(&SEED).unwrap();
 	g.bench_function("hpke_rs", |b| {
@@ -1016,7 +992,7 @@ fn bench_setup_x25519_aes256(c: &mut Criterion) {
 fn bench_setup_p256_aes128(c: &mut Criterion) {
 	type Suite = ng::Hpke<ng::DhKemP256HkdfSha256, ng::HkdfSha256, ng::Aes128Gcm>;
 	let mut prng = rand_chacha::ChaCha20Rng::from_seed([0x42u8; 32]);
-	let (_, pk_ng) = ng::DhKemP256HkdfSha256::generate(&mut prng.unwrap_mut()).unwrap();
+	let (_, pk_ng) = ng::DhKemP256HkdfSha256::generate(&mut prng).unwrap();
 
 	let mut rs = HpkeRs::<HpkeRustCrypto>::new(
 		Mode::Base,
@@ -1030,9 +1006,7 @@ fn bench_setup_p256_aes128(c: &mut Criterion) {
 
 	let mut g = c.benchmark_group("p256_aes128/setup_sender_base");
 	g.bench_function("hpke_ng", |b| {
-		b.iter(|| {
-			Suite::setup_sender_base(&mut prng.unwrap_mut(), black_box(&pk_ng), b"info").unwrap()
-		})
+		b.iter(|| Suite::setup_sender_base(&mut prng, black_box(&pk_ng), b"info").unwrap())
 	});
 	rs.seed(&SEED).unwrap();
 	g.bench_function("hpke_rs", |b| {
@@ -1058,7 +1032,7 @@ fn bench_setup_p256_aes128(c: &mut Criterion) {
 fn bench_setup_p256_aes256(c: &mut Criterion) {
 	type Suite = ng::Hpke<ng::DhKemP256HkdfSha256, ng::HkdfSha256, ng::Aes256Gcm>;
 	let mut prng = rand_chacha::ChaCha20Rng::from_seed([0x42u8; 32]);
-	let (_, pk_ng) = ng::DhKemP256HkdfSha256::generate(&mut prng.unwrap_mut()).unwrap();
+	let (_, pk_ng) = ng::DhKemP256HkdfSha256::generate(&mut prng).unwrap();
 
 	let mut rs = HpkeRs::<HpkeRustCrypto>::new(
 		Mode::Base,
@@ -1072,9 +1046,7 @@ fn bench_setup_p256_aes256(c: &mut Criterion) {
 
 	let mut g = c.benchmark_group("p256_aes256/setup_sender_base");
 	g.bench_function("hpke_ng", |b| {
-		b.iter(|| {
-			Suite::setup_sender_base(&mut prng.unwrap_mut(), black_box(&pk_ng), b"info").unwrap()
-		})
+		b.iter(|| Suite::setup_sender_base(&mut prng, black_box(&pk_ng), b"info").unwrap())
 	});
 	rs.seed(&SEED).unwrap();
 	g.bench_function("hpke_rs", |b| {
@@ -1100,7 +1072,7 @@ fn bench_setup_p256_aes256(c: &mut Criterion) {
 fn bench_setup_k256_chacha(c: &mut Criterion) {
 	type Suite = ng::Hpke<ng::DhKemK256HkdfSha256, ng::HkdfSha256, ng::ChaCha20Poly1305>;
 	let mut prng = rand_chacha::ChaCha20Rng::from_seed([0x42u8; 32]);
-	let (_, pk_ng) = ng::DhKemK256HkdfSha256::generate(&mut prng.unwrap_mut()).unwrap();
+	let (_, pk_ng) = ng::DhKemK256HkdfSha256::generate(&mut prng).unwrap();
 
 	let mut rs = HpkeRs::<HpkeRustCrypto>::new(
 		Mode::Base,
@@ -1112,9 +1084,7 @@ fn bench_setup_k256_chacha(c: &mut Criterion) {
 
 	let mut g = c.benchmark_group("k256_chacha20/setup_sender_base");
 	g.bench_function("hpke_ng", |b| {
-		b.iter(|| {
-			Suite::setup_sender_base(&mut prng.unwrap_mut(), black_box(&pk_ng), b"info").unwrap()
-		})
+		b.iter(|| Suite::setup_sender_base(&mut prng, black_box(&pk_ng), b"info").unwrap())
 	});
 	rs.seed(&SEED).unwrap();
 	g.bench_function("hpke_rs", |b| {
@@ -1129,9 +1099,8 @@ fn bench_setup_k256_chacha(c: &mut Criterion) {
 fn bench_setup_xwing_chacha(c: &mut Criterion) {
 	type Suite = ng::Hpke<ng::XWingDraft06, ng::HkdfSha256, ng::ChaCha20Poly1305>;
 	let mut prng = rand_chacha::ChaCha20Rng::from_seed([0x42u8; 32]);
-	let (sk_ng, pk_ng) = ng::XWingDraft06::generate(&mut prng.unwrap_mut()).unwrap();
-	let (enc_ng, _ctx_ng) =
-		Suite::setup_sender_base(&mut prng.unwrap_mut(), &pk_ng, b"info").unwrap();
+	let (sk_ng, pk_ng) = ng::XWingDraft06::generate(&mut prng).unwrap();
+	let (enc_ng, _ctx_ng) = Suite::setup_sender_base(&mut prng, &pk_ng, b"info").unwrap();
 
 	let mut rs = HpkeRs::<HpkeRustCrypto>::new(
 		Mode::Base,
@@ -1154,9 +1123,7 @@ fn bench_setup_xwing_chacha(c: &mut Criterion) {
 
 	let mut g = c.benchmark_group("xwing_chacha20/setup_sender_base");
 	g.bench_function("hpke_ng", |b| {
-		b.iter(|| {
-			Suite::setup_sender_base(&mut prng.unwrap_mut(), black_box(&pk_ng), b"info").unwrap()
-		})
+		b.iter(|| Suite::setup_sender_base(&mut prng, black_box(&pk_ng), b"info").unwrap())
 	});
 	g.bench_function("hpke_rs", |b| {
 		b.iter(|| {
@@ -1206,9 +1173,8 @@ fn bench_setup_xwing_chacha(c: &mut Criterion) {
 fn bench_setup_mlkem768_chacha(c: &mut Criterion) {
 	type Suite = ng::Hpke<ng::MlKem768, ng::HkdfSha256, ng::ChaCha20Poly1305>;
 	let mut prng = rand_chacha::ChaCha20Rng::from_seed([0x42u8; 32]);
-	let (sk_ng, pk_ng) = ng::MlKem768::generate(&mut prng.unwrap_mut()).unwrap();
-	let (enc_ng, _ctx_ng) =
-		Suite::setup_sender_base(&mut prng.unwrap_mut(), &pk_ng, b"info").unwrap();
+	let (sk_ng, pk_ng) = ng::MlKem768::generate(&mut prng).unwrap();
+	let (enc_ng, _ctx_ng) = Suite::setup_sender_base(&mut prng, &pk_ng, b"info").unwrap();
 
 	let mut rs = HpkeRs::<HpkeRustCrypto>::new(
 		Mode::Base,
@@ -1222,9 +1188,7 @@ fn bench_setup_mlkem768_chacha(c: &mut Criterion) {
 
 	let mut g = c.benchmark_group("mlkem768_chacha20/setup_sender_base");
 	g.bench_function("hpke_ng", |b| {
-		b.iter(|| {
-			Suite::setup_sender_base(&mut prng.unwrap_mut(), black_box(&pk_ng), b"info").unwrap()
-		})
+		b.iter(|| Suite::setup_sender_base(&mut prng, black_box(&pk_ng), b"info").unwrap())
 	});
 	g.bench_function("hpke_rs", |b| {
 		b.iter(|| {
@@ -1253,9 +1217,8 @@ fn bench_setup_mlkem768_chacha(c: &mut Criterion) {
 fn bench_setup_mlkem1024_chacha(c: &mut Criterion) {
 	type Suite = ng::Hpke<ng::MlKem1024, ng::HkdfSha256, ng::ChaCha20Poly1305>;
 	let mut prng = rand_chacha::ChaCha20Rng::from_seed([0x42u8; 32]);
-	let (sk_ng, pk_ng) = ng::MlKem1024::generate(&mut prng.unwrap_mut()).unwrap();
-	let (enc_ng, _ctx_ng) =
-		Suite::setup_sender_base(&mut prng.unwrap_mut(), &pk_ng, b"info").unwrap();
+	let (sk_ng, pk_ng) = ng::MlKem1024::generate(&mut prng).unwrap();
+	let (enc_ng, _ctx_ng) = Suite::setup_sender_base(&mut prng, &pk_ng, b"info").unwrap();
 
 	let mut rs = HpkeRs::<HpkeRustCrypto>::new(
 		Mode::Base,
@@ -1269,9 +1232,7 @@ fn bench_setup_mlkem1024_chacha(c: &mut Criterion) {
 
 	let mut g = c.benchmark_group("mlkem1024_chacha20/setup_sender_base");
 	g.bench_function("hpke_ng", |b| {
-		b.iter(|| {
-			Suite::setup_sender_base(&mut prng.unwrap_mut(), black_box(&pk_ng), b"info").unwrap()
-		})
+		b.iter(|| Suite::setup_sender_base(&mut prng, black_box(&pk_ng), b"info").unwrap())
 	});
 	g.bench_function("hpke_rs", |b| {
 		b.iter(|| {
@@ -1304,7 +1265,7 @@ fn bench_setup_mlkem1024_chacha(c: &mut Criterion) {
 fn bench_seal_x25519_chacha_payload_sweep(c: &mut Criterion) {
 	type Suite = ng::Hpke<ng::DhKemX25519HkdfSha256, ng::HkdfSha256, ng::ChaCha20Poly1305>;
 	let mut prng = rand_chacha::ChaCha20Rng::from_seed([0x42u8; 32]);
-	let (_, pk_ng) = ng::DhKemX25519HkdfSha256::generate(&mut prng.unwrap_mut()).unwrap();
+	let (_, pk_ng) = ng::DhKemX25519HkdfSha256::generate(&mut prng).unwrap();
 
 	let mut rs = HpkeRs::<HpkeRustCrypto>::new(
 		Mode::Base,
@@ -1328,16 +1289,7 @@ fn bench_seal_x25519_chacha_payload_sweep(c: &mut Criterion) {
 		let pt = vec![0xAAu8; size];
 		g.throughput(Throughput::Bytes(size as u64));
 		g.bench_with_input(BenchmarkId::new("hpke_ng", size), &size, |b, _| {
-			b.iter(|| {
-				Suite::seal_base(
-					&mut prng.unwrap_mut(),
-					&pk_ng,
-					b"info",
-					b"aad",
-					black_box(&pt),
-				)
-				.unwrap()
-			})
+			b.iter(|| Suite::seal_base(&mut prng, &pk_ng, b"info", b"aad", black_box(&pt)).unwrap())
 		});
 		rs.seed(&SEED).unwrap();
 		g.bench_with_input(BenchmarkId::new("hpke_rs", size), &size, |b, _| {
@@ -1367,7 +1319,7 @@ fn bench_seal_x25519_chacha_payload_sweep(c: &mut Criterion) {
 fn bench_seal_x25519_aes128_payload_sweep(c: &mut Criterion) {
 	type Suite = ng::Hpke<ng::DhKemX25519HkdfSha256, ng::HkdfSha256, ng::Aes128Gcm>;
 	let mut prng = rand_chacha::ChaCha20Rng::from_seed([0x42u8; 32]);
-	let (_, pk_ng) = ng::DhKemX25519HkdfSha256::generate(&mut prng.unwrap_mut()).unwrap();
+	let (_, pk_ng) = ng::DhKemX25519HkdfSha256::generate(&mut prng).unwrap();
 
 	let mut rs = HpkeRs::<HpkeRustCrypto>::new(
 		Mode::Base,
@@ -1389,16 +1341,7 @@ fn bench_seal_x25519_aes128_payload_sweep(c: &mut Criterion) {
 		let pt = vec![0xAAu8; size];
 		g.throughput(Throughput::Bytes(size as u64));
 		g.bench_with_input(BenchmarkId::new("hpke_ng", size), &size, |b, _| {
-			b.iter(|| {
-				Suite::seal_base(
-					&mut prng.unwrap_mut(),
-					&pk_ng,
-					b"info",
-					b"aad",
-					black_box(&pt),
-				)
-				.unwrap()
-			})
+			b.iter(|| Suite::seal_base(&mut prng, &pk_ng, b"info", b"aad", black_box(&pt)).unwrap())
 		});
 		rs.seed(&SEED).unwrap();
 		g.bench_with_input(BenchmarkId::new("hpke_rs", size), &size, |b, _| {
@@ -1432,7 +1375,7 @@ fn bench_open_x25519_chacha_payload_sweep(c: &mut Criterion) {
 	type Suite = ng::Hpke<ng::DhKemX25519HkdfSha256, ng::HkdfSha256, ng::ChaCha20Poly1305>;
 
 	let mut prng = rand_chacha::ChaCha20Rng::from_seed([0x42u8; 32]);
-	let (sk_ng, pk_ng) = ng::DhKemX25519HkdfSha256::generate(&mut prng.unwrap_mut()).unwrap();
+	let (sk_ng, pk_ng) = ng::DhKemX25519HkdfSha256::generate(&mut prng).unwrap();
 
 	let mut rs = HpkeRs::<HpkeRustCrypto>::new(
 		Mode::Base,
@@ -1452,8 +1395,7 @@ fn bench_open_x25519_chacha_payload_sweep(c: &mut Criterion) {
 	for &size in &[64usize, 256, 1024, 4096, 16384, 65536] {
 		let pt = vec![0xAAu8; size];
 		// Pre-seal one message with each library to use as the open input.
-		let (enc_ng, ct_ng) =
-			Suite::seal_base(&mut prng.unwrap_mut(), &pk_ng, b"info", b"aad", &pt).unwrap();
+		let (enc_ng, ct_ng) = Suite::seal_base(&mut prng, &pk_ng, b"info", b"aad", &pt).unwrap();
 
 		rs.seed(&SEED).unwrap();
 		let (enc_rs, ct_rs) = rs
@@ -1510,7 +1452,7 @@ fn bench_open_x25519_aes128_payload_sweep(c: &mut Criterion) {
 	type Suite = ng::Hpke<ng::DhKemX25519HkdfSha256, ng::HkdfSha256, ng::Aes128Gcm>;
 
 	let mut prng = rand_chacha::ChaCha20Rng::from_seed([0x42u8; 32]);
-	let (sk_ng, pk_ng) = ng::DhKemX25519HkdfSha256::generate(&mut prng.unwrap_mut()).unwrap();
+	let (sk_ng, pk_ng) = ng::DhKemX25519HkdfSha256::generate(&mut prng).unwrap();
 
 	let mut rs = HpkeRs::<HpkeRustCrypto>::new(
 		Mode::Base,
@@ -1530,8 +1472,7 @@ fn bench_open_x25519_aes128_payload_sweep(c: &mut Criterion) {
 	for &size in &[64usize, 256, 1024, 4096, 16384, 65536] {
 		let pt = vec![0xAAu8; size];
 
-		let (enc_ng, ct_ng) =
-			Suite::seal_base(&mut prng.unwrap_mut(), &pk_ng, b"info", b"aad", &pt).unwrap();
+		let (enc_ng, ct_ng) = Suite::seal_base(&mut prng, &pk_ng, b"info", b"aad", &pt).unwrap();
 
 		rs.seed(&SEED).unwrap(); // needed outside of iter(), since seal() draws randomness.
 		let (enc_rs, ct_rs) = rs
@@ -1592,9 +1533,8 @@ fn bench_open_x25519_aes128_payload_sweep(c: &mut Criterion) {
 fn bench_context_seal_x25519_chacha(c: &mut Criterion) {
 	type Suite = ng::Hpke<ng::DhKemX25519HkdfSha256, ng::HkdfSha256, ng::ChaCha20Poly1305>;
 	let mut prng = rand_chacha::ChaCha20Rng::from_seed([0x42u8; 32]);
-	let (_, pk_ng) = ng::DhKemX25519HkdfSha256::generate(&mut prng.unwrap_mut()).unwrap();
-	let (_, mut ctx_ng) =
-		Suite::setup_sender_base(&mut prng.unwrap_mut(), &pk_ng, b"info").unwrap();
+	let (_, pk_ng) = ng::DhKemX25519HkdfSha256::generate(&mut prng).unwrap();
+	let (_, mut ctx_ng) = Suite::setup_sender_base(&mut prng, &pk_ng, b"info").unwrap();
 
 	let mut rs = HpkeRs::<HpkeRustCrypto>::new(
 		Mode::Base,
@@ -1650,7 +1590,7 @@ fn bench_context_seal_x25519_chacha(c: &mut Criterion) {
 fn bench_context_open_x25519_chacha(c: &mut Criterion) {
 	type Suite = ng::Hpke<ng::DhKemX25519HkdfSha256, ng::HkdfSha256, ng::ChaCha20Poly1305>;
 	let mut prng = rand_chacha::ChaCha20Rng::from_seed([0x42u8; 32]);
-	let (sk_ng, pk_ng) = ng::DhKemX25519HkdfSha256::generate(&mut prng.unwrap_mut()).unwrap();
+	let (sk_ng, pk_ng) = ng::DhKemX25519HkdfSha256::generate(&mut prng).unwrap();
 
 	let mut rs = HpkeRs::<HpkeRustCrypto>::new(
 		Mode::Base,
@@ -1676,8 +1616,7 @@ fn bench_context_open_x25519_chacha(c: &mut Criterion) {
 		let pt = vec![0xAAu8; size];
 
 		// Setup synchronized contexts for hpke_ng
-		let (enc_ng, mut ctx_s_ng) =
-			Suite::setup_sender_base(&mut prng.unwrap_mut(), &pk_ng, b"info").unwrap();
+		let (enc_ng, mut ctx_s_ng) = Suite::setup_sender_base(&mut prng, &pk_ng, b"info").unwrap();
 		let mut ctx_r_ng = Suite::setup_receiver_base(&enc_ng, &sk_ng, b"info").unwrap();
 
 		// Setup synchronized contexts for hpke_rs
@@ -1749,8 +1688,8 @@ fn bench_export(c: &mut Criterion) {
 	// library's API design — it is not a measurement artifact.
 	type Suite = ng::Hpke<ng::DhKemX25519HkdfSha256, ng::HkdfSha256, ng::ChaCha20Poly1305>;
 	let mut prng = rand_chacha::ChaCha20Rng::from_seed([0x42u8; 32]);
-	let (_, pk_ng) = ng::DhKemX25519HkdfSha256::generate(&mut prng.unwrap_mut()).unwrap();
-	let (_enc, ctx_ng) = Suite::setup_sender_base(&mut prng.unwrap_mut(), &pk_ng, b"info").unwrap();
+	let (_, pk_ng) = ng::DhKemX25519HkdfSha256::generate(&mut prng).unwrap();
+	let (_enc, ctx_ng) = Suite::setup_sender_base(&mut prng, &pk_ng, b"info").unwrap();
 
 	let mut rs = HpkeRs::<HpkeRustCrypto>::new(
 		Mode::Base,
@@ -1812,7 +1751,7 @@ fn bench_export(c: &mut Criterion) {
 fn bench_roundtrip(c: &mut Criterion) {
 	type Suite = ng::Hpke<ng::DhKemX25519HkdfSha256, ng::HkdfSha256, ng::ChaCha20Poly1305>;
 	let mut prng = rand_chacha::ChaCha20Rng::from_seed([0x42u8; 32]);
-	let (sk_ng, pk_ng) = ng::DhKemX25519HkdfSha256::generate(&mut prng.unwrap_mut()).unwrap();
+	let (sk_ng, pk_ng) = ng::DhKemX25519HkdfSha256::generate(&mut prng).unwrap();
 
 	let mut rs = HpkeRs::<HpkeRustCrypto>::new(
 		Mode::Base,
@@ -1835,14 +1774,8 @@ fn bench_roundtrip(c: &mut Criterion) {
 	g.sample_size(50);
 	g.bench_function("hpke_ng", |b| {
 		b.iter(|| {
-			let (enc, ct) = Suite::seal_base(
-				&mut prng.unwrap_mut(),
-				&pk_ng,
-				b"info",
-				b"aad",
-				black_box(&pt),
-			)
-			.unwrap();
+			let (enc, ct) =
+				Suite::seal_base(&mut prng, &pk_ng, b"info", b"aad", black_box(&pt)).unwrap();
 			Suite::open_base(&enc, &sk_ng, b"info", b"aad", &ct).unwrap()
 		})
 	});

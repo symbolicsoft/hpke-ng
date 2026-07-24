@@ -2,7 +2,7 @@
 
 use alloc::vec::Vec;
 
-use rand_core::{CryptoRng, RngCore};
+use rand_core::CryptoRng;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::HpkeError;
@@ -35,7 +35,7 @@ pub trait Kem: Sealed {
 	type SharedSecret: AsRef<[u8]> + Zeroize;
 
 	/// Generate a fresh key pair.
-	fn generate<R: CryptoRng + RngCore>(
+	fn generate<R: CryptoRng>(
 		rng: &mut R,
 	) -> Result<(Self::PrivateKey, Self::PublicKey), HpkeError>;
 
@@ -43,7 +43,7 @@ pub trait Kem: Sealed {
 	fn derive_key_pair(ikm: &[u8]) -> Result<(Self::PrivateKey, Self::PublicKey), HpkeError>;
 
 	/// Encapsulate a shared secret to a recipient public key.
-	fn encap<R: CryptoRng + RngCore>(
+	fn encap<R: CryptoRng>(
 		rng: &mut R,
 		pk_r: &Self::PublicKey,
 	) -> Result<(Self::SharedSecret, Self::EncappedKey), HpkeError>;
@@ -78,7 +78,7 @@ pub trait Kem: Sealed {
 /// not, so calling `Hpke::seal_auth` with a PQ KEM is a compile-time error.
 pub trait AuthKem: Kem {
 	/// `AuthEncap(pk_r, sk_s)` (RFC 9180 §4.1).
-	fn auth_encap<R: CryptoRng + RngCore>(
+	fn auth_encap<R: CryptoRng>(
 		rng: &mut R,
 		pk_r: &Self::PublicKey,
 		sk_s: &Self::PrivateKey,

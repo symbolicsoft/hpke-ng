@@ -22,7 +22,7 @@ use hpke_ng as ng;
 use hpke_rs::{Hpke as HpkeRs, Mode};
 use hpke_rs_crypto::types as rs_types;
 use hpke_rs_rust_crypto::HpkeRustCrypto as RsBackend;
-use rand::SeedableRng;
+use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 
 const ITERATIONS_DEFAULT: usize = 10;
@@ -49,7 +49,7 @@ macro_rules! diff_base_sealing {
 			for iter in 0..iterations() {
 				let mut buf = |n: usize| {
 					let mut v = vec![0u8; n];
-					rand::RngCore::fill_bytes(&mut rng, &mut v);
+					rng.fill_bytes(&mut v);
 					v
 				};
 				let info = buf(16);
@@ -159,7 +159,7 @@ macro_rules! diff_psk_sealing {
 			for iter in 0..iterations() {
 				let mut buf = |n: usize| {
 					let mut v = vec![0u8; n];
-					rand::RngCore::fill_bytes(&mut rng, &mut v);
+					rng.fill_bytes(&mut v);
 					v
 				};
 				let info = buf(16);

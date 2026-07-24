@@ -4,12 +4,13 @@
 //!
 //! ```
 //! use hpke_ng::*;
-//! use rand_core::{OsRng, TryRngCore as _};
+//! use rand::rngs::SysRng;
+//! use rand_core::UnwrapErr;
 //!
 //! type Suite = Hpke<DhKemX25519HkdfSha256, HkdfSha256, ChaCha20Poly1305>;
 //!
-//! let mut os = OsRng;
-//! let mut rng = os.unwrap_mut();
+//! let mut os = SysRng;
+//! let mut rng = UnwrapErr(&mut os);
 //! let (sk_r, pk_r) = DhKemX25519HkdfSha256::generate(&mut rng).unwrap();
 //! let (enc, ct) =
 //!     Suite::seal_base(&mut rng, &pk_r, b"info", b"aad", b"hello").unwrap();
@@ -83,12 +84,13 @@ use crate::kdf::{labeled_expand_pieces, labeled_extract};
 ///
 /// ```no_run
 /// use hpke_ng::*;
-/// use rand_core::{OsRng, TryRngCore as _};
+/// use rand::rngs::SysRng;
+/// use rand_core::UnwrapErr;
 ///
 /// type Suite = Hpke<DhKemX25519HkdfSha256, HkdfSha256, ChaCha20Poly1305>;
 ///
-/// let mut os = OsRng;
-/// let mut rng = os.unwrap_mut();
+/// let mut os = SysRng;
+/// let mut rng = UnwrapErr(&mut os);
 /// let (sk_r, pk_r) = DhKemX25519HkdfSha256::generate(&mut rng).unwrap();
 /// let (enc, ct) =
 ///     Suite::seal_base(&mut rng, &pk_r, b"info", b"aad", b"hello").unwrap();
@@ -321,11 +323,11 @@ mod ks_tests {
 	}
 }
 
-use rand_core::{CryptoRng, RngCore};
+use rand_core::CryptoRng;
 
 impl<K: Kem, F: Kdf, A: Aead> Hpke<K, F, A> {
 	/// `SetupBaseS` (RFC 9180 §5.1.1).
-	pub fn setup_sender_base<R: CryptoRng + RngCore>(
+	pub fn setup_sender_base<R: CryptoRng>(
 		rng: &mut R,
 		pk_r: &K::PublicKey,
 		info: &[u8],
@@ -350,7 +352,7 @@ impl<K: Kem, F: Kdf, A: Aead> Hpke<K, F, A> {
 	/// `psk` MUST be at least 32 bytes of high-entropy random data. Length is
 	/// enforced; entropy is the caller's responsibility — see
 	/// [`HpkeError::InsecurePsk`].
-	pub fn setup_sender_psk<R: CryptoRng + RngCore>(
+	pub fn setup_sender_psk<R: CryptoRng>(
 		rng: &mut R,
 		pk_r: &K::PublicKey,
 		info: &[u8],
@@ -382,7 +384,7 @@ impl<K: Kem, F: Kdf, A: Aead> Hpke<K, F, A> {
 
 impl<K: Kem, F: Kdf, A: SealingAead> Hpke<K, F, A> {
 	/// Single-shot Base-mode encrypt (RFC 9180 §6.1).
-	pub fn seal_base<R: CryptoRng + RngCore>(
+	pub fn seal_base<R: CryptoRng>(
 		rng: &mut R,
 		pk_r: &K::PublicKey,
 		info: &[u8],
@@ -408,7 +410,7 @@ impl<K: Kem, F: Kdf, A: SealingAead> Hpke<K, F, A> {
 
 	/// Single-shot Psk-mode encrypt (RFC 9180 §6.1).
 	#[allow(clippy::too_many_arguments)]
-	pub fn seal_psk<R: CryptoRng + RngCore>(
+	pub fn seal_psk<R: CryptoRng>(
 		rng: &mut R,
 		pk_r: &K::PublicKey,
 		info: &[u8],
@@ -440,7 +442,7 @@ impl<K: Kem, F: Kdf, A: SealingAead> Hpke<K, F, A> {
 
 impl<K: AuthKem, F: Kdf, A: SealingAead> Hpke<K, F, A> {
 	/// Single-shot Auth-mode encrypt (RFC 9180 §6.1).
-	pub fn seal_auth<R: CryptoRng + RngCore>(
+	pub fn seal_auth<R: CryptoRng>(
 		rng: &mut R,
 		pk_r: &K::PublicKey,
 		info: &[u8],
@@ -468,7 +470,7 @@ impl<K: AuthKem, F: Kdf, A: SealingAead> Hpke<K, F, A> {
 
 	/// Single-shot AuthPsk-mode encrypt (RFC 9180 §6.1).
 	#[allow(clippy::too_many_arguments)]
-	pub fn seal_auth_psk<R: CryptoRng + RngCore>(
+	pub fn seal_auth_psk<R: CryptoRng>(
 		rng: &mut R,
 		pk_r: &K::PublicKey,
 		info: &[u8],
@@ -502,7 +504,7 @@ impl<K: AuthKem, F: Kdf, A: SealingAead> Hpke<K, F, A> {
 
 impl<K: Kem, F: Kdf, A: Aead> Hpke<K, F, A> {
 	/// Sender-side single-shot export — Base mode (RFC 9180 §6.2).
-	pub fn send_export_base<R: CryptoRng + RngCore>(
+	pub fn send_export_base<R: CryptoRng>(
 		rng: &mut R,
 		pk_r: &K::PublicKey,
 		info: &[u8],
@@ -527,7 +529,7 @@ impl<K: Kem, F: Kdf, A: Aead> Hpke<K, F, A> {
 
 	/// Sender-side single-shot export — Psk mode.
 	#[allow(clippy::too_many_arguments)]
-	pub fn send_export_psk<R: CryptoRng + RngCore>(
+	pub fn send_export_psk<R: CryptoRng>(
 		rng: &mut R,
 		pk_r: &K::PublicKey,
 		info: &[u8],
@@ -558,7 +560,7 @@ impl<K: Kem, F: Kdf, A: Aead> Hpke<K, F, A> {
 
 impl<K: AuthKem, F: Kdf, A: Aead> Hpke<K, F, A> {
 	/// Sender-side single-shot export — Auth mode.
-	pub fn send_export_auth<R: CryptoRng + RngCore>(
+	pub fn send_export_auth<R: CryptoRng>(
 		rng: &mut R,
 		pk_r: &K::PublicKey,
 		info: &[u8],
@@ -585,7 +587,7 @@ impl<K: AuthKem, F: Kdf, A: Aead> Hpke<K, F, A> {
 
 	/// Sender-side single-shot export — `AuthPsk` mode.
 	#[allow(clippy::too_many_arguments)]
-	pub fn send_export_auth_psk<R: CryptoRng + RngCore>(
+	pub fn send_export_auth_psk<R: CryptoRng>(
 		rng: &mut R,
 		pk_r: &K::PublicKey,
 		info: &[u8],
@@ -618,7 +620,7 @@ impl<K: AuthKem, F: Kdf, A: Aead> Hpke<K, F, A> {
 
 impl<K: AuthKem, F: Kdf, A: Aead> Hpke<K, F, A> {
 	/// `SetupAuthS` (RFC 9180 §5.1.3).
-	pub fn setup_sender_auth<R: CryptoRng + RngCore>(
+	pub fn setup_sender_auth<R: CryptoRng>(
 		rng: &mut R,
 		pk_r: &K::PublicKey,
 		info: &[u8],
@@ -645,7 +647,7 @@ impl<K: AuthKem, F: Kdf, A: Aead> Hpke<K, F, A> {
 	/// `psk` MUST be at least 32 bytes of high-entropy random data. Length is
 	/// enforced; entropy is the caller's responsibility — see
 	/// [`HpkeError::InsecurePsk`].
-	pub fn setup_sender_auth_psk<R: CryptoRng + RngCore>(
+	pub fn setup_sender_auth_psk<R: CryptoRng>(
 		rng: &mut R,
 		pk_r: &K::PublicKey,
 		info: &[u8],
@@ -688,7 +690,8 @@ pub mod __test_only {
 #[cfg(test)]
 mod hpke_tests {
 	use super::*;
-	use rand_core::{OsRng, TryRngCore as _};
+	use rand::rngs::SysRng;
+	use rand_core::UnwrapErr;
 
 	/// Type-level check: `ExportOnly` suites compile without a `SealingAead`
 	/// bound, exposing only `*_export_*` methods. The full setup/seal/open
@@ -696,8 +699,8 @@ mod hpke_tests {
 	#[test]
 	fn export_only_suite_compiles() {
 		type ExportSuite = Hpke<DhKemX25519HkdfSha256, HkdfSha256, ExportOnly>;
-		let mut os_rng = OsRng;
-		let mut rng = os_rng.unwrap_mut();
+		let mut os_rng = SysRng;
+		let mut rng = UnwrapErr(&mut os_rng);
 		let (sk_r, pk_r) = DhKemX25519HkdfSha256::generate(&mut rng).unwrap();
 		let (enc, sec) =
 			ExportSuite::send_export_base(&mut rng, &pk_r, b"info", b"ctx", 32).unwrap();

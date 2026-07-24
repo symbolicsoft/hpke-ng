@@ -6,44 +6,12 @@
 
 use alloc::vec::Vec;
 
-use rand_core::{CryptoRng, RngCore};
+use rand_core::CryptoRng;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::HpkeError;
 use crate::kem::Kem;
 use crate::sealed::Sealed;
-
-// ---------------------------------------------------------------------------
-// RNG compatibility shim: rand_core 0.9 -> rand_core 0.10
-// ---------------------------------------------------------------------------
-//
-// x-wing depends on `rand_core 0.10`, which has different trait definitions
-// than the `rand_core 0.9` used by the rest of hpke-ng. This wrapper bridges
-// the two so that our callers' RNGs (0.9 traits) can be passed into x-wing's
-// API (0.10 traits).
-
-struct RngCompat10<'a, R: RngCore + CryptoRng>(pub(crate) &'a mut R);
-
-impl<R: RngCore + CryptoRng> rand_core_10::TryRng for RngCompat10<'_, R> {
-	type Error = core::convert::Infallible;
-
-	fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
-		Ok(self.0.next_u32())
-	}
-
-	fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
-		Ok(self.0.next_u64())
-	}
-
-	fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), Self::Error> {
-		self.0.fill_bytes(dest);
-		Ok(())
-	}
-}
-
-// TryCryptoRng is a marker trait; blanket impl applies automatically because
-// rand_core_10::CryptoRng is blanket-impl'd for all TryCryptoRng<Error=Infallible>.
-impl<R: RngCore + CryptoRng> rand_core_10::TryCryptoRng for RngCompat10<'_, R> {}
 
 // ---------------------------------------------------------------------------
 // X-Wing (draft-connolly-cfrg-xwing-kem-06; IANA KEM ID 0x647A).
@@ -149,7 +117,7 @@ impl Kem for XWingDraft06 {
 	type EncappedKey = XWingEncappedKey;
 	type SharedSecret = XWingSharedSecret;
 
-	fn generate<R: CryptoRng + RngCore>(
+	fn generate<R: CryptoRng>(
 		rng: &mut R,
 	) -> Result<(Self::PrivateKey, Self::PublicKey), HpkeError> {
 		let mut seed = [0u8; 32];
@@ -168,15 +136,14 @@ impl Kem for XWingDraft06 {
 		Ok(keypair_from_seed(seed))
 	}
 
-	fn encap<R: CryptoRng + RngCore>(
+	fn encap<R: CryptoRng>(
 		rng: &mut R,
 		pk_r: &Self::PublicKey,
 	) -> Result<(Self::SharedSecret, Self::EncappedKey), HpkeError> {
 		use x_wing::Encapsulate;
-		let mut compat = RngCompat10(rng);
 		// Use the cached parsed `EncapsulationKey` directly — no per-call
 		// `try_from` over the 1216-byte wire form.
-		let (ct, mut ss) = pk_r.parsed.encapsulate_with_rng(&mut compat);
+		let (ct, mut ss) = pk_r.parsed.encapsulate_with_rng(rng);
 		let mut ss_bytes = [0u8; 32];
 		ss_bytes.copy_from_slice(ss.as_ref());
 		// Scrub the upstream shared-secret array; it is a plain `Array<u8, 32>`
@@ -366,7 +333,7 @@ macro_rules! ml_kem_variant {
 			type EncappedKey = $enc_wrap;
 			type SharedSecret = MlKemSharedSecret;
 
-			fn generate<R: CryptoRng + RngCore>(
+			fn generate<R: CryptoRng>(
 				rng: &mut R,
 			) -> Result<(Self::PrivateKey, Self::PublicKey), HpkeError> {
 				let mut seed = [0u8; 64];
@@ -389,15 +356,14 @@ macro_rules! ml_kem_variant {
 				Ok($from_seed(seed))
 			}
 
-			fn encap<R: CryptoRng + RngCore>(
+			fn encap<R: CryptoRng>(
 				rng: &mut R,
 				pk_r: &Self::PublicKey,
 			) -> Result<(Self::SharedSecret, Self::EncappedKey), HpkeError> {
 				use ml_kem::kem::Encapsulate as _;
-				let mut compat = RngCompat10(rng);
 				// Cached parsed `EncapsulationKey` — no per-call `try_into`
 				// + `<$ek>::new` over the 1184/1568-byte wire form.
-				let (ct, mut ss) = pk_r.parsed.encapsulate_with_rng(&mut compat);
+				let (ct, mut ss) = pk_r.parsed.encapsulate_with_rng(rng);
 				let out = MlKemSharedSecret(ss.to_vec());
 				// Scrub the upstream shared-secret array; `MlKemSharedSecret`
 				// owns the only surviving copy.
@@ -513,7 +479,8 @@ ml_kem_variant!(
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use rand_core::{OsRng, TryRngCore as _};
+	use rand::rngs::SysRng;
+	use rand_core::UnwrapErr;
 
 	// Roundtrip coverage lives in `tests/roundtrip.rs`. The tests here cover
 	// behaviours that aren't expressible in the macro-generated matrix:
@@ -525,8 +492,8 @@ mod tests {
 		($name:ident, $kem:ty, $seed_len:expr) => {
 			#[test]
 			fn $name() {
-				let mut os_rng = OsRng;
-				let mut rng = os_rng.unwrap_mut();
+				let mut os_rng = SysRng;
+				let mut rng = UnwrapErr(&mut os_rng);
 				let (sk_r, pk_r) = <$kem>::generate(&mut rng).unwrap();
 				let sk_bytes = <$kem>::sk_to_bytes(&sk_r);
 				assert_eq!(sk_bytes.len(), $seed_len);
@@ -546,8 +513,8 @@ mod tests {
 	#[test]
 	fn xwing_derive_key_pair_roundtrip() {
 		let (sk_r, pk_r) = XWingDraft06::derive_key_pair(b"x-wing test ikm").unwrap();
-		let mut os_rng = OsRng;
-		let mut rng = os_rng.unwrap_mut();
+		let mut os_rng = SysRng;
+		let mut rng = UnwrapErr(&mut os_rng);
 		let (ss_e, enc) = XWingDraft06::encap(&mut rng, &pk_r).unwrap();
 		assert_eq!(
 			XWingDraft06::decap(&enc, &sk_r).unwrap().as_ref(),
