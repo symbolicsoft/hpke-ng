@@ -26,7 +26,11 @@ pub struct Context<K: Kem, F: Kdf, A: Aead> {
 	/// Raw AEAD key bytes — kept under cfg gate so the test/KAT/differential
 	/// harnesses can assert on them. Production builds carry only the
 	/// derived `cipher` state.
-	#[cfg(any(test, feature = "hazmat-kat-internals", feature = "hazmat-differential"))]
+	#[cfg(any(
+		test,
+		feature = "hazmat-kat-internals",
+		feature = "hazmat-differential"
+	))]
 	raw_key: Zeroizing<Vec<u8>>,
 	_kfa: PhantomData<(K, F, A)>,
 }
@@ -72,7 +76,11 @@ impl<K: Kem, F: Kdf, A: Aead> Context<K, F, A> {
 			base_nonce: nonce_arr,
 			exporter_secret: Zeroizing::new(exporter_secret),
 			seq: 0,
-			#[cfg(any(test, feature = "hazmat-kat-internals", feature = "hazmat-differential"))]
+			#[cfg(any(
+				test,
+				feature = "hazmat-kat-internals",
+				feature = "hazmat-differential"
+			))]
 			raw_key: Zeroizing::new(key_z.to_vec()),
 			_kfa: PhantomData,
 		})
@@ -113,7 +121,11 @@ impl<K: Kem, F: Kdf, A: Aead> Context<K, F, A> {
 	}
 }
 
-#[cfg(any(test, feature = "hazmat-kat-internals", feature = "hazmat-differential"))]
+#[cfg(any(
+	test,
+	feature = "hazmat-kat-internals",
+	feature = "hazmat-differential"
+))]
 impl<K: Kem, F: Kdf, A: Aead> Context<K, F, A> {
 	/// Test-only: expose the AEAD key.
 	#[must_use]
@@ -213,7 +225,11 @@ impl<K: Kem, F: Kdf, A: Aead> SenderContext<K, F, A> {
 	/// Test/KAT/differential-only: wrap a raw key-schedule [`Context`] as a
 	/// sender context (the harnesses build contexts from injected shared
 	/// secrets rather than through `setup_sender_*`).
-	#[cfg(any(test, feature = "hazmat-kat-internals", feature = "hazmat-differential"))]
+	#[cfg(any(
+		test,
+		feature = "hazmat-kat-internals",
+		feature = "hazmat-differential"
+	))]
 	#[doc(hidden)]
 	#[must_use]
 	pub fn from_context(inner: Context<K, F, A>) -> Self {
@@ -252,7 +268,11 @@ impl<K: Kem, F: Kdf, A: SealingAead> ReceiverContext<K, F, A> {
 }
 
 /// Test/KAT/differential accessors that delegate to the inner [`Context`].
-#[cfg(any(test, feature = "hazmat-kat-internals", feature = "hazmat-differential"))]
+#[cfg(any(
+	test,
+	feature = "hazmat-kat-internals",
+	feature = "hazmat-differential"
+))]
 impl<K: Kem, F: Kdf, A: Aead> ReceiverContext<K, F, A> {
 	/// Test-only: expose the AEAD key.
 	#[must_use]
