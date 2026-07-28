@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.2.0] - 2026-07-27
+## [0.2.0] - 2026-07-28
 
 - **Breaking: post-quantum `DeriveKeyPair` now follows draft-ietf-hpke-pq.** The PQ KEMs were implementing the superseded draft-connolly conventions: ML-KEM took the IKM verbatim as the 64-byte `(d, z)` seed (and rejected any other length), and X-Wing used a bare `SHAKE256(ikm, 32)`. draft-ietf-hpke-pq §3.2/§4.2 instead derive the seed with `SHAKE256.LabeledDerive(ikm, "DeriveKeyPair", "", Nsk)` — the one-stage-KDF construction from draft-ietf-hpke-hpke §4, which mixes in `"HPKE-v1"`, the KEM `suite_id`, the length-prefixed label, and `I2OSP(L, 2)`. Consequences: `derive_key_pair` on `MlKem768`, `MlKem1024` and `XWingDraft06` returns **different key pairs than 0.1.x for the same IKM**, and any IKM length is now accepted. Generated and wire-loaded keys are unaffected, as are all wire formats and the key schedule; only IKM-derived keys change. `HpkeError::InvalidKeyMaterial` becomes unreachable as a result, and is removed below.
 - **New: cross-implementation differential tests against `rust-hpke`** (`tests/differential_rust_hpke.rs`), covering the four KEMs that previously had no independent validation at all — P-384, ML-KEM-768, ML-KEM-1024, X-Wing — plus P-521, and X25519/P-256 as controls. Each suite runs both directions through public APIs only (no `hazmat-` feature), comparing key serializations, ciphertext interop, and exporter output. `DeriveKeyPair` is compared for every KEM; those rows are what verify the `LabeledDerive` byte layout above.
