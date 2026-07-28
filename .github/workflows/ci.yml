@@ -114,6 +114,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
-      - uses: taiki-e/install-action@cargo-fuzz
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
       - name: cargo fuzz run ${{ matrix.target }}
         run: cargo fuzz run ${{ matrix.target }} -- -max_total_time=60 -rss_limit_mb=4096

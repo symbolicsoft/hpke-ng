@@ -39,9 +39,9 @@ hazmat-differential  = []
 hazmat-kat-internals = []
 
 [dev-dependencies]
-hpke-rs             = { version = "0.6", features = ["std", "rustcrypto", "hpke-test", "hpke-test-prng", "hazmat"] }
-hpke-rs-rust-crypto = { version = "0.6", features = ["experimental"] }
-hpke-rs-crypto      = "0.6"
+hpke-rs             = { version = "0.7", features = ["std", "rustcrypto", "hpke-test", "hpke-test-prng", "hazmat"] }
+hpke-rs-rust-crypto = { version = "0.7", features = ["experimental"] }
+hpke-rs-crypto      = "0.7"
 serde               = { version = "1", features = ["derive"] }
 serde_json          = "1"
 trybuild            = { version = "1", features = ["diff"] }
@@ -49,7 +49,7 @@ rand                = "0.10"
 rand_chacha         = "0.10"
 criterion           = { version = "0.8", features = ["html_reports"] }
 hex                 = "0.4"
-hpke                = { package = "hpke", git = "https://github.com/rozbb/rust-hpke", rev = "57b14d8", features = ["x25519", "nistp", "aes", "chacha", "alloc", "mlkem"] }
+hpke                = { package = "hpke", version = "0.14", git = "https://github.com/rozbb/rust-hpke", rev = "57b14d8", features = ["x25519", "nistp", "aes", "chacha", "alloc", "mlkem"] }
 
 [profile.bench]
 lto = "thin"
