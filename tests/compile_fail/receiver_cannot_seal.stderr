@@ -18,5 +18,5 @@ note: the candidate is defined in the trait `hpke_ng::SealingAead`
 help: use associated function syntax instead
    |
 25 -     let _ = receiver.seal(b"aad", b"plaintext");
-25 +     let _ = ReceiverContext<DhKem<X25519, hpke_ng::HkdfSha256>, hpke_ng::HkdfSha256, hpke_ng::ChaCha20Poly1305>::seal(b"aad", b"plaintext");
+25 +     let _ = ReceiverContext<DhKem<X25519>, hpke_ng::HkdfSha256, hpke_ng::ChaCha20Poly1305>::seal(b"aad", b"plaintext");
    |

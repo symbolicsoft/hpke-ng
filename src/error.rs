@@ -38,9 +38,7 @@ pub enum HpkeError {
 	InconsistentPsk,
 	/// PSK input is required by the mode but missing.
 	MissingPsk,
-	/// PSK input is provided but not needed by the mode.
-	UnnecessaryPsk,
-	/// PSK has fewer than 32 bytes.
+	/// PSK is shorter than [`MIN_PSK_LEN`](crate::MIN_PSK_LEN).
 	///
 	/// RFC 9180 §5.1 requires PSKs with **at least 32 bytes of entropy**. This
 	/// crate enforces a 32-byte minimum length as a proxy for entropy; the
@@ -52,17 +50,14 @@ pub enum HpkeError {
 	ExportLengthExceeded,
 	/// AEAD sequence-number limit reached.
 	MessageLimitReached,
-	/// `DeriveKeyPair` rejection sampling exhausted all 256 candidates
-	/// (RFC 9180 §7.1.3). With high probability this only occurs when the
-	/// IKM has insufficient entropy.
-	DeriveKeyPairError,
-	/// The input keying material supplied to `DeriveKeyPair` has the wrong length.
+	/// A key-derivation step failed.
 	///
-	/// For ML-KEM-768 and ML-KEM-1024, `derive_key_pair` requires exactly
-	/// 64 bytes of IKM representing the `(d, z)` seed as specified in
-	/// draft-connolly-cfrg-hpke-mlkem §3.2.
-	/// Passing any other length returns this error.
-	InvalidKeyMaterial,
+	/// Either `DeriveKeyPair` rejection sampling exhausted all 256 candidates
+	/// (RFC 9180 §7.1.3), which with high probability means the IKM had
+	/// insufficient entropy, or a PRK shorter than the KDF's hash length was
+	/// passed to [`Kdf::expand`](crate::Kdf::expand). The latter is unreachable
+	/// through this crate's own call paths.
+	DeriveKeyPairError,
 }
 
 impl fmt::Display for HpkeError {
@@ -78,12 +73,10 @@ impl fmt::Display for HpkeError {
 			Self::InvalidEncappedKey => "invalid encapsulated key",
 			Self::InconsistentPsk => "PSK and PSK ID must both be empty or both non-empty",
 			Self::MissingPsk => "PSK is required by this mode",
-			Self::UnnecessaryPsk => "PSK is not used by this mode",
 			Self::InsecurePsk => "PSK shorter than 32 bytes",
 			Self::ExportLengthExceeded => "requested length exceeds HKDF-Expand maximum",
 			Self::MessageLimitReached => "AEAD message limit reached",
 			Self::DeriveKeyPairError => "DeriveKeyPair rejection sampling exhausted",
-			Self::InvalidKeyMaterial => "input keying material has incorrect length",
 		};
 		f.write_str(s)
 	}
@@ -102,10 +95,6 @@ mod tests {
 		assert_eq!(
 			format!("{}", HpkeError::InsecurePsk),
 			"PSK shorter than 32 bytes"
-		);
-		assert_eq!(
-			format!("{}", HpkeError::InvalidKeyMaterial),
-			"input keying material has incorrect length"
 		);
 	}
 

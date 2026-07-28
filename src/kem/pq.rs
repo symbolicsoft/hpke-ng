@@ -3,6 +3,15 @@
 //! Available only with the `pq` feature. These KEMs intentionally do **not**
 //! implement [`AuthKem`](crate::kem::AuthKem); HPKE Auth/AuthPsk modes are
 //! defined only for DHKEMs.
+//!
+//! RFC 9180 predates all three, so their HPKE registration — KEM IDs, length
+//! parameters, and `DeriveKeyPair` — comes from
+//! [draft-ietf-hpke-pq](https://datatracker.ietf.org/doc/draft-ietf-hpke-pq/)
+//! (§3 for ML-KEM, §4 for the hybrids, where KEM ID `0x647A`
+//! `MLKEM768-X25519` is X-Wing). `DeriveKeyPair` there is built on the
+//! one-stage-KDF `LabeledDerive` of
+//! [draft-ietf-hpke-hpke](https://datatracker.ietf.org/doc/draft-ietf-hpke-hpke/)
+//! §4 rather than on RFC 9180's HKDF-based `LabeledExtract`/`LabeledExpand`.
 
 use alloc::vec::Vec;
 
@@ -10,11 +19,55 @@ use rand_core::CryptoRng;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::HpkeError;
-use crate::kem::Kem;
+use crate::kem::{Kem, kem_suite_id};
 use crate::sealed::Sealed;
 
+/// `DeriveKeyPair` label — draft-ietf-hpke-pq §3.2 (ML-KEM) and §4.2 (hybrids).
+const DERIVE_KEY_PAIR_LABEL: &[u8] = b"DeriveKeyPair";
+
+/// `SHAKE256.LabeledDerive(ikm, label, context, L)` — the one-stage-KDF labeled
+/// derivation of draft-ietf-hpke-hpke §4:
+///
+/// ```text
+/// labeled_ikm = ikm || "HPKE-v1" || suite_id
+///               || lengthPrefixed(label) || I2OSP(L, 2) || context
+/// return SHAKE256(labeled_ikm, L)
+/// ```
+///
+/// where `lengthPrefixed(x) = I2OSP(len(x), 2) || x`. `context` is empty at
+/// every call site here, so it is not a parameter.
+///
+/// The field order deliberately differs from RFC 9180's `LabeledExpand`, which
+/// leads with `I2OSP(L, 2)` and does not length-prefix the label. This is a
+/// separate construction introduced for XOF-based KDFs; do not unify them.
+fn shake256_labeled_derive(
+	suite_id: [u8; 5],
+	label: &[u8],
+	ikm: &[u8],
+	out: &mut [u8],
+) -> Result<(), HpkeError> {
+	use shake::digest::{ExtendableOutput, Update, XofReader};
+
+	// Both lengths are compile-time constants at every call site (a 13-byte
+	// label, a 32- or 64-byte output). Converting fallibly rather than with a
+	// truncating cast keeps this free of unreachable panics.
+	let label_len = u16::try_from(label.len()).map_err(|_| HpkeError::DeriveKeyPairError)?;
+	let out_len = u16::try_from(out.len()).map_err(|_| HpkeError::DeriveKeyPairError)?;
+
+	let mut h = shake::Shake256::default();
+	h.update(ikm);
+	h.update(b"HPKE-v1");
+	h.update(&suite_id);
+	h.update(&label_len.to_be_bytes());
+	h.update(label);
+	h.update(&out_len.to_be_bytes());
+	h.finalize_xof().read(out);
+	Ok(())
+}
+
 // ---------------------------------------------------------------------------
-// X-Wing (draft-connolly-cfrg-xwing-kem-06; IANA KEM ID 0x647A).
+// X-Wing (draft-connolly-cfrg-xwing-kem-06), registered for HPKE as
+// `MLKEM768-X25519`, KEM ID 0x647A (draft-ietf-hpke-pq §4).
 // ---------------------------------------------------------------------------
 
 /// X-Wing KEM (draft 06).
@@ -99,6 +152,7 @@ impl Zeroize for XWingSharedSecret {
 	}
 }
 
+impl ZeroizeOnDrop for XWingSharedSecret {}
 impl Drop for XWingSharedSecret {
 	fn drop(&mut self) {
 		self.zeroize();
@@ -120,20 +174,29 @@ impl Kem for XWingDraft06 {
 	fn generate<R: CryptoRng>(
 		rng: &mut R,
 	) -> Result<(Self::PrivateKey, Self::PublicKey), HpkeError> {
-		let mut seed = [0u8; 32];
-		rng.fill_bytes(&mut seed);
-		Ok(keypair_from_seed(seed))
+		let mut seed = Zeroizing::new([0u8; 32]);
+		rng.fill_bytes(&mut seed[..]);
+		Ok(keypair_from_seed(*seed))
 	}
 
 	fn derive_key_pair(ikm: &[u8]) -> Result<(Self::PrivateKey, Self::PublicKey), HpkeError> {
-		// X-Wing draft-06 specifies raw SHAKE-256(ikm, 32) for DeriveKeyPair.
-		use shake::digest::{ExtendableOutput, Update, XofReader};
-		let mut hasher = shake::Shake256::default();
-		hasher.update(ikm);
-		let mut reader = hasher.finalize_xof();
-		let mut seed = [0u8; 32];
-		reader.read(&mut seed);
-		Ok(keypair_from_seed(seed))
+		// draft-ietf-hpke-pq §4.2, for KEM ID 0x647A (`MLKEM768-X25519`):
+		//
+		//   def DeriveKeyPair(ikm):
+		//     seed = SHAKE256.LabeledDerive(ikm, "DeriveKeyPair", "", 32)
+		//     return KEM.DeriveKeyPair(seed)
+		//
+		// The draft says `ikm` SHOULD be at least 32 bytes. That is an entropy
+		// obligation on the caller, which a length check cannot enforce, so any
+		// length is accepted — as for the DHKEMs.
+		let mut seed = Zeroizing::new([0u8; 32]);
+		shake256_labeled_derive(
+			kem_suite_id(Self::ID),
+			DERIVE_KEY_PAIR_LABEL,
+			ikm,
+			&mut seed[..],
+		)?;
+		Ok(keypair_from_seed(*seed))
 	}
 
 	fn encap<R: CryptoRng>(
@@ -187,13 +250,16 @@ impl Kem for XWingDraft06 {
 	}
 
 	fn sk_from_bytes(b: &[u8]) -> Result<Self::PrivateKey, HpkeError> {
-		if b.len() != 32 {
+		if b.len() != Self::PRIVATE_KEY_LEN {
 			return Err(HpkeError::InvalidPrivateKey);
 		}
-		let mut seed = [0u8; 32];
+		let mut seed = Zeroizing::new([0u8; 32]);
 		seed.copy_from_slice(b);
-		let dk = x_wing::DecapsulationKey::from(seed);
-		Ok(XWingPrivateKey { seed, dk: Some(dk) })
+		let dk = x_wing::DecapsulationKey::from(*seed);
+		Ok(XWingPrivateKey {
+			seed: *seed,
+			dk: Some(dk),
+		})
 	}
 
 	fn enc_from_bytes(b: &[u8]) -> Result<Self::EncappedKey, HpkeError> {
@@ -231,7 +297,7 @@ fn keypair_from_seed(seed: [u8; 32]) -> (XWingPrivateKey, XWingPublicKey) {
 }
 
 // ---------------------------------------------------------------------------
-// ML-KEM-768 / ML-KEM-1024 (draft-connolly-cfrg-hpke-mlkem; not in RFC 9180).
+// ML-KEM-768 / ML-KEM-1024 (draft-ietf-hpke-pq §3; not in RFC 9180).
 // Both parameter sets share a uniform FIPS 203 / ml-kem 0.3 API surface, so
 // the wrappers + Kem impl + seed→keypair helper are emitted by `ml_kem_variant!`.
 // `MlKemSharedSecret` is shared (same 32-byte output size for both variants).
@@ -239,7 +305,7 @@ fn keypair_from_seed(seed: [u8; 32]) -> (XWingPrivateKey, XWingPublicKey) {
 
 /// Shared secret produced by ML-KEM encap/decap (32 bytes); same wire size for
 /// ML-KEM-768 and ML-KEM-1024.
-pub struct MlKemSharedSecret(Vec<u8>);
+pub struct MlKemSharedSecret([u8; 32]);
 
 impl AsRef<[u8]> for MlKemSharedSecret {
 	fn as_ref(&self) -> &[u8] {
@@ -253,6 +319,7 @@ impl Zeroize for MlKemSharedSecret {
 	}
 }
 
+impl ZeroizeOnDrop for MlKemSharedSecret {}
 impl Drop for MlKemSharedSecret {
 	fn drop(&mut self) {
 		self.zeroize();
@@ -340,24 +407,33 @@ macro_rules! ml_kem_variant {
 			fn generate<R: CryptoRng>(
 				rng: &mut R,
 			) -> Result<(Self::PrivateKey, Self::PublicKey), HpkeError> {
-				let mut seed = [0u8; 64];
-				rng.fill_bytes(&mut seed);
-				Ok($from_seed(seed))
+				let mut seed = Zeroizing::new([0u8; 64]);
+				rng.fill_bytes(&mut seed[..]);
+				Ok($from_seed(*seed))
 			}
 
 			fn derive_key_pair(
 				ikm: &[u8],
 			) -> Result<(Self::PrivateKey, Self::PublicKey), HpkeError> {
-				// draft-connolly-cfrg-hpke-mlkem-04 §3.2: `ikm` is the 64-byte
-				// (d, z) seed passed directly to FIPS 203 KeyGen_internal.
-				// Domain separation across parameter sets is provided by the
-				// KEM itself: KeyGen_internal mixes `k` (3 vs 4) into G(d || k).
-				if ikm.len() != 64 {
-					return Err(HpkeError::InvalidKeyMaterial);
-				}
-				let mut seed = [0u8; 64];
-				seed.copy_from_slice(ikm);
-				Ok($from_seed(seed))
+				// draft-ietf-hpke-pq §3.2:
+				//
+				//   def DeriveKeyPair(ikm):
+				//     dk = SHAKE256.LabeledDerive(ikm, "DeriveKeyPair", "", 64)
+				//     (_expanded_dk, ek) = expandDecapsKey(dk)
+				//     return (dk, ek)
+				//
+				// `dk` is the 64-byte (d, z) seed handed to FIPS 203
+				// KeyGen_internal. Parameter sets are separated twice over: by
+				// `suite_id` here, and by KeyGen_internal mixing `k` (3 vs 4)
+				// into G(d || k).
+				let mut seed = Zeroizing::new([0u8; 64]);
+				shake256_labeled_derive(
+					kem_suite_id(Self::ID),
+					DERIVE_KEY_PAIR_LABEL,
+					ikm,
+					&mut seed[..],
+				)?;
+				Ok($from_seed(*seed))
 			}
 
 			fn encap<R: CryptoRng>(
@@ -368,11 +444,12 @@ macro_rules! ml_kem_variant {
 				// Cached parsed `EncapsulationKey` — no per-call `try_into`
 				// + `<$ek>::new` over the 1184/1568-byte wire form.
 				let (ct, mut ss) = pk_r.parsed.encapsulate_with_rng(rng);
-				let out = MlKemSharedSecret(ss.to_vec());
+				let mut ss_bytes = [0u8; 32];
+				ss_bytes.copy_from_slice(ss.as_ref());
 				// Scrub the upstream shared-secret array; `MlKemSharedSecret`
 				// owns the only surviving copy.
 				ss.zeroize();
-				Ok((out, $enc_wrap(ct.to_vec())))
+				Ok((MlKemSharedSecret(ss_bytes), $enc_wrap(ct.to_vec())))
 			}
 
 			fn decap(
@@ -391,10 +468,11 @@ macro_rules! ml_kem_variant {
 					.try_into()
 					.map_err(|_| HpkeError::InvalidEncappedKey)?;
 				let mut ss = dk.decapsulate(&ct);
-				let out = MlKemSharedSecret(ss.to_vec());
+				let mut ss_bytes = [0u8; 32];
+				ss_bytes.copy_from_slice(ss.as_ref());
 				// Scrub the upstream shared-secret array (see `encap`).
 				ss.zeroize();
-				Ok(out)
+				Ok(MlKemSharedSecret(ss_bytes))
 			}
 
 			fn pk_from_bytes(b: &[u8]) -> Result<Self::PublicKey, HpkeError> {
@@ -413,12 +491,12 @@ macro_rules! ml_kem_variant {
 			}
 
 			fn sk_from_bytes(b: &[u8]) -> Result<Self::PrivateKey, HpkeError> {
-				if b.len() != 64 {
+				if b.len() != Self::PRIVATE_KEY_LEN {
 					return Err(HpkeError::InvalidPrivateKey);
 				}
-				let mut seed = [0u8; 64];
+				let mut seed = Zeroizing::new([0u8; 64]);
 				seed.copy_from_slice(b);
-				let (sk, _pk) = $from_seed(seed);
+				let (sk, _pk) = $from_seed(*seed);
 				Ok(sk)
 			}
 
@@ -517,8 +595,8 @@ mod tests {
 	sk_roundtrip_test!(ml_kem_768_sk_to_bytes_roundtrip, MlKem768, 64);
 	sk_roundtrip_test!(ml_kem_1024_sk_to_bytes_roundtrip, MlKem1024, 64);
 
-	/// X-Wing draft-06 specifies SHAKE-256(ikm, 32) for `DeriveKeyPair` —
-	/// any non-empty ikm yields a working key pair.
+	/// `DeriveKeyPair` derives a 32-byte seed via `LabeledDerive`
+	/// (draft-ietf-hpke-pq §4.2), so any IKM length yields a working key pair.
 	#[test]
 	fn xwing_derive_key_pair_roundtrip() {
 		let (sk_r, pk_r) = XWingDraft06::derive_key_pair(b"x-wing test ikm").unwrap();
@@ -544,8 +622,11 @@ mod tests {
 		assert_ne!(&pk_768.as_ref()[..n], &pk_1024.as_ref()[..n]);
 	}
 
-	/// `derive_key_pair(ikm)` is deterministic and stores `ikm` verbatim as
-	/// the (d, z) seed. draft-connolly-cfrg-hpke-mlkem-04 §3.2 mandates this.
+	/// `derive_key_pair(ikm)` is deterministic, accepts any IKM length, and runs
+	/// the IKM through `LabeledDerive` rather than using it verbatim as the
+	/// (d, z) seed (draft-ietf-hpke-pq §3.2). The `assert_ne!` is the regression
+	/// guard against reverting to the older draft-connolly convention, under
+	/// which `ikm` *was* the seed and had to be exactly 64 bytes.
 	macro_rules! ml_kem_derive_seed_test {
 		($name:ident, $kem:ty) => {
 			#[test]
@@ -554,12 +635,16 @@ mod tests {
 				let (sk1, pk1) = <$kem>::derive_key_pair(&ikm).unwrap();
 				let (_, pk2) = <$kem>::derive_key_pair(&ikm).unwrap();
 				assert_eq!(pk1.as_ref(), pk2.as_ref());
-				assert_eq!(sk1.seed, ikm);
-				for bad_len in [0usize, 32, 63, 65] {
-					assert!(matches!(
-						<$kem>::derive_key_pair(&vec![0u8; bad_len]),
-						Err(HpkeError::InvalidKeyMaterial)
-					));
+				assert_ne!(sk1.seed, ikm, "IKM must be run through LabeledDerive");
+
+				// Every IKM length is accepted, and lengths are distinguished:
+				// SHAKE absorbs the whole input, so padding is not truncation.
+				let mut seen: Vec<Vec<u8>> = Vec::new();
+				for len in [0usize, 1, 32, 63, 64, 65, 200] {
+					let (_, pk) = <$kem>::derive_key_pair(&vec![0u8; len]).unwrap();
+					let bytes = pk.as_ref().to_vec();
+					assert!(!seen.contains(&bytes), "IKM length {len} collided");
+					seen.push(bytes);
 				}
 			}
 		};

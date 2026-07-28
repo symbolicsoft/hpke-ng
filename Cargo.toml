@@ -1,6 +1,6 @@
 [package]
 name         = "hpke-ng"
-version      = "0.1.0"
+version      = "0.2.0"
 edition      = "2024"
 rust-version = "1.96"
 license      = "Apache-2.0 OR MIT"
@@ -9,6 +9,7 @@ description  = "Clean, fast, RFC 9180 HPKE implementation."
 readme       = "README.md"
 keywords     = ["hpke", "crypto", "rfc9180", "encryption"]
 categories   = ["cryptography", "no-std"]
+exclude      = ["tests/test_vectors.json", "tests/test_vectors_k256.json"]
 
 [dependencies]
 zeroize          = { version = "1.8",  default-features = false, features = ["derive", "alloc"] }
@@ -16,7 +17,6 @@ subtle           = { version = "2.6",  default-features = false }
 rand_core        = { version = "0.10", default-features = false }
 hkdf             = { version = "0.13", default-features = false }
 sha2             = { version = "0.11", default-features = false }
-sha3             = { version = "0.12", default-features = false }
 shake            = { version = "0.1",  default-features = false, optional = true }
 aead             = { version = "0.5",  default-features = false, features = ["alloc"] }
 aes-gcm          = { version = "0.10", default-features = false, features = ["aes", "alloc", "zeroize"] }
@@ -29,20 +29,13 @@ p521             = { version = "0.14", default-features = false, features = ["ar
 k256             = { version = "0.14", default-features = false, features = ["arithmetic", "ecdh"] }
 ml-kem           = { version = "0.3.2", default-features = false, features = ["zeroize"], optional = true }
 x-wing           = { version = "0.1.0", default-features = false, features = ["zeroize"], optional = true }
-serde            = { version = "1",    default-features = false, features = ["derive"], optional = true }
 
 [features]
-default       = ["std"]
-std           = ["subtle/std", "aes-gcm/std", "chacha20poly1305/std"]
-pq            = ["dep:ml-kem", "dep:x-wing", "dep:shake"]
-serde         = ["dep:serde"]
-# The two `hazmat-*` features expose secret internals (raw AEAD keys,
-# exporter secrets, deterministic ephemeral-key injection) for the KAT and
-# differential test harnesses. Never enable them in production builds:
-# Cargo feature unification means any crate in the dependency graph that
-# turns them on enables them for every user of hpke-ng in that build.
+default = ["std"]
+std     = ["subtle/std", "aes-gcm/std", "chacha20poly1305/std"]
+pq      = ["dep:ml-kem", "dep:x-wing", "dep:shake"]
+comparative = ["pq"]
 hazmat-differential  = []
-comparative          = ["pq"]
 hazmat-kat-internals = []
 
 [dev-dependencies]
@@ -68,7 +61,7 @@ required-features = ["hazmat-kat-internals"]
 
 [[test]]
 name = "compile_fail"
-required-features = ["pq"]
+required-features = ["pq", "hazmat-kat-internals"]
 
 [[bench]]
 name = "bench"

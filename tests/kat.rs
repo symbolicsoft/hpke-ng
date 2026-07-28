@@ -1,20 +1,22 @@
 //! RFC 9180 Known-Answer-Test runner.
 //!
-//! For each vector in `tests/test_vectors.json` and `tests/test_vectors_k256.json`,
-//! verify byte-equal match for derived keys, encapsulated key, key/base_nonce/
-//! exporter_secret, every encryption ciphertext, and every export value.
+//! For every vector in `tests/test_vectors.json` and `tests/test_vectors_k256.json`,
+//! asserts byte equality of the derived key pair, the shared secret, the key,
+//! base nonce and exporter secret, every ciphertext, and every exported value.
 //!
-//! Tasks 25 and 26 add the actual test functions that consume these vectors.
+//! The vector files are excluded from the published crate (see `Cargo.toml`), so
+//! this harness runs from a git checkout only.
 
 #![allow(non_snake_case)]
-#![allow(dead_code)] // helper fns added in Task 25
 
 use std::fs::File;
 use std::io::BufReader;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+/// One vector. Fields the harness does not assert on are omitted; serde ignores
+/// the unknown keys that remain in the JSON.
+#[derive(Deserialize)]
 pub struct HpkeTestVector {
 	pub mode: u8,
 	pub kem_id: u16,
@@ -25,17 +27,12 @@ pub struct HpkeTestVector {
 	pub ikmS: Option<String>,
 	pub ikmE: String,
 	pub skRm: String,
-	pub skSm: Option<String>,
-	pub skEm: String,
 	pub psk: Option<String>,
 	pub psk_id: Option<String>,
 	pub pkRm: String,
-	pub pkSm: Option<String>,
 	pub pkEm: String,
 	pub enc: String,
 	pub shared_secret: String,
-	pub key_schedule_context: String,
-	pub secret: String,
 	pub key: String,
 	pub base_nonce: String,
 	pub exporter_secret: String,
@@ -43,15 +40,14 @@ pub struct HpkeTestVector {
 	pub exports: Vec<ExportsKAT>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Deserialize)]
 pub struct CiphertextKAT {
 	pub aad: String,
 	pub ct: String,
-	pub nonce: String,
 	pub pt: String,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Deserialize)]
 pub struct ExportsKAT {
 	pub exporter_context: String,
 	pub L: usize,
@@ -107,6 +103,23 @@ where
 		hex_decode(&v.pkRm),
 		"pkRm mismatch"
 	);
+	// `sk_from_bytes` must accept the vector's private key and yield the same
+	// key `DeriveKeyPair` produced.
+	//
+	// Byte equality with `skRm` deliberately does *not* hold for X25519 and
+	// X448: RFC 9180 §7.1.2 serializes the raw scalar, while this crate stores
+	// it clamped per RFC 7748 §5 so that `sk_to_bytes` is canonical across the
+	// `generate` / `derive` / `sk_from_bytes` paths. The two encodings denote
+	// the same scalar — both clamp identically at use time — so they agree on
+	// the public key and on every DH output, which is what interop needs and
+	// what this asserts. The P-curves, which do not clamp, do match byte for
+	// byte.
+	let sk_from_vector = K::sk_from_bytes(&hex_decode(&v.skRm)).expect("skRm bytes");
+	assert_eq!(
+		<K as Kem>::sk_to_bytes(&sk_from_vector).as_slice(),
+		<K as Kem>::sk_to_bytes(&sk_r).as_slice(),
+		"skRm disagrees with DeriveKeyPair(ikmR)",
+	);
 
 	let ikm_e = hex_decode(&v.ikmE);
 	let (_, pk_e) = K::derive_key_pair(&ikm_e).expect("derive E");
@@ -116,8 +129,14 @@ where
 		"pkEm mismatch"
 	);
 
-	let psk = opt_hex(&v.psk).unwrap_or_default();
-	let psk_id = opt_hex(&v.psk_id).unwrap_or_default();
+	let psk_bytes = opt_hex(&v.psk).unwrap_or_default();
+	let psk_id_bytes = opt_hex(&v.psk_id).unwrap_or_default();
+	// PSK-mode vectors carry both fields and Base/Auth vectors carry neither, so
+	// the bundle exists only for the modes that use it.
+	let psk = match v.mode {
+		1 | 3 => Some(Psk::new(&psk_bytes, &psk_id_bytes).expect("KAT PSK is well formed")),
+		_ => None,
+	};
 	let shared_secret = hex_decode(&v.shared_secret);
 
 	// 1. Direct key-schedule comparison.
@@ -129,8 +148,7 @@ where
 		1 => hpke_ng::__test_only::key_schedule_psk::<hpke_ng::PskModeTag, K, F, A>(
 			&shared_secret,
 			&info,
-			&psk,
-			&psk_id,
+			psk.expect("psk mode vector has a PSK"),
 		),
 		2 => hpke_ng::__test_only::key_schedule_psk_free::<hpke_ng::AuthModeTag, K, F, A>(
 			&shared_secret,
@@ -139,8 +157,7 @@ where
 		3 => hpke_ng::__test_only::key_schedule_psk::<hpke_ng::AuthPskModeTag, K, F, A>(
 			&shared_secret,
 			&info,
-			&psk,
-			&psk_id,
+			psk.expect("auth-psk mode vector has a PSK"),
 		),
 		m => panic!("unknown mode {m}"),
 	}
@@ -163,8 +180,13 @@ where
 	let receiver_ctx = match v.mode {
 		0 => Hpke::<K, F, A>::setup_receiver_base(&kat_enc, &sk_r, &info)
 			.expect("setup_receiver_base"),
-		1 => Hpke::<K, F, A>::setup_receiver_psk(&kat_enc, &sk_r, &info, &psk, &psk_id)
-			.expect("setup_receiver_psk"),
+		1 => Hpke::<K, F, A>::setup_receiver_psk(
+			&kat_enc,
+			&sk_r,
+			&info,
+			psk.expect("psk mode vector has a PSK"),
+		)
+		.expect("setup_receiver_psk"),
 		m => panic!(
 			"Auth/AuthPsk vectors (mode={}) handled by run_kat_auth_*",
 			m
@@ -172,6 +194,14 @@ where
 	};
 	assert_eq!(receiver_ctx.key(), hex_decode(&v.key));
 	assert_eq!(receiver_ctx.nonce(), hex_decode(&v.base_nonce));
+
+	// Decapsulation in isolation, so a KEM-level failure is distinguishable
+	// from a key-schedule one.
+	assert_eq!(
+		K::decap(&kat_enc, &sk_r).expect("decap").as_ref(),
+		shared_secret.as_slice(),
+		"decap shared_secret mismatch",
+	);
 
 	// 3. Exporter values.
 	for ex in &v.exports {
@@ -355,15 +385,15 @@ where
 	let ikm_s = v.ikmS.as_ref().expect("auth-mode vector has ikmS");
 	let (_sk_s, pk_s) = K::derive_key_pair(&hex_decode(ikm_s)).unwrap();
 
-	let psk = opt_hex(&v.psk).unwrap_or_default();
-	let psk_id = opt_hex(&v.psk_id).unwrap_or_default();
+	let psk_bytes = opt_hex(&v.psk).unwrap_or_default();
+	let psk_id_bytes = opt_hex(&v.psk_id).unwrap_or_default();
 
 	let kat_enc = K::enc_from_bytes(&hex_decode(&v.enc)).unwrap();
 	let mut ctx = if v.mode == 2 {
 		Hpke::<K, F, A>::setup_receiver_auth(&kat_enc, &sk_r, &info, &pk_s).unwrap()
 	} else {
-		Hpke::<K, F, A>::setup_receiver_auth_psk(&kat_enc, &sk_r, &info, &psk, &psk_id, &pk_s)
-			.unwrap()
+		let psk = Psk::new(&psk_bytes, &psk_id_bytes).expect("KAT PSK is well formed");
+		Hpke::<K, F, A>::setup_receiver_auth_psk(&kat_enc, &sk_r, &info, psk, &pk_s).unwrap()
 	};
 	assert_eq!(ctx.key(), hex_decode(&v.key), "auth key mismatch");
 	assert_eq!(

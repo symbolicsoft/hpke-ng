@@ -264,13 +264,11 @@ fn bench_setup_x25519_chacha(c: &mut Criterion) {
 	});
 	g.finish();
 
-	let psk = [0xAAu8; 32];
-	let psk_id = b"psk-id";
+	let psk_secret = [0xAAu8; 32];
+	let psk = Psk::new(&psk_secret, b"psk-id").unwrap();
 	let mut g = c.benchmark_group("x25519_chacha20/setup_sender_psk");
 	g.bench_function("hpke_ng", |b| {
-		b.iter(|| {
-			Suite::setup_sender_psk(&mut prng, black_box(&pk), b"info", &psk, psk_id).unwrap()
-		})
+		b.iter(|| Suite::setup_sender_psk(&mut prng, black_box(&pk), b"info", psk).unwrap())
 	});
 	g.finish();
 }

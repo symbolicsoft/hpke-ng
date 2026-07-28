@@ -2,4 +2,4 @@ error[E0599]: no method named `clone` found for struct `SenderContext<K, F, A>` 
   --> tests/compile_fail/context_not_clone.rs:17:14
    |
 17 |     let _ = ctx.clone();
-   |                 ^^^^^ method not found in `SenderContext<DhKem<X25519, hpke_ng::HkdfSha256>, hpke_ng::HkdfSha256, hpke_ng::ChaCha20Poly1305>`
+   |                 ^^^^^ method not found in `SenderContext<DhKem<X25519>, hpke_ng::HkdfSha256, hpke_ng::ChaCha20Poly1305>`

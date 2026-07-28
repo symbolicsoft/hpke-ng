@@ -18,5 +18,5 @@ note: the candidate is defined in the trait `hpke_ng::SealingAead`
 help: use associated function syntax instead
    |
 19 -     let _ = sender.open(b"aad", b"ciphertext");
-19 +     let _ = SenderContext<DhKem<X25519, hpke_ng::HkdfSha256>, hpke_ng::HkdfSha256, hpke_ng::ChaCha20Poly1305>::open(b"aad", b"ciphertext");
+19 +     let _ = SenderContext<DhKem<X25519>, hpke_ng::HkdfSha256, hpke_ng::ChaCha20Poly1305>::open(b"aad", b"ciphertext");
    |

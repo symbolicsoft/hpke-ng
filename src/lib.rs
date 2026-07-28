@@ -46,6 +46,7 @@ extern crate alloc;
 mod aead;
 mod error;
 mod kdf;
+mod psk;
 mod sealed;
 
 pub mod kem;
@@ -60,6 +61,7 @@ pub use kem::{
 		DhKemX448HkdfSha512, DhKemX25519HkdfSha256,
 	},
 };
+pub use psk::{MIN_PSK_LEN, Psk};
 
 #[cfg(feature = "pq")]
 pub use kem::pq::{MlKem768, MlKem1024, XWingDraft06};
@@ -71,35 +73,21 @@ pub use context::{Context, ReceiverContext, SenderContext};
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 
+use rand_core::CryptoRng;
+
 use zeroize::Zeroizing;
 
 use crate::kdf::{labeled_expand_pieces, labeled_extract};
 
 /// HPKE configuration parameterized over a KEM, KDF, and AEAD.
 ///
-/// `Hpke` is a zero-sized type. All operations are associated functions; there
-/// is no instance state and no PRNG owned by the configuration.
-///
-/// # Example
-///
-/// ```no_run
-/// use hpke_ng::*;
-/// use rand::rngs::SysRng;
-/// use rand_core::UnwrapErr;
-///
-/// type Suite = Hpke<DhKemX25519HkdfSha256, HkdfSha256, ChaCha20Poly1305>;
-///
-/// let mut os = SysRng;
-/// let mut rng = UnwrapErr(&mut os);
-/// let (sk_r, pk_r) = DhKemX25519HkdfSha256::generate(&mut rng).unwrap();
-/// let (enc, ct) =
-///     Suite::seal_base(&mut rng, &pk_r, b"info", b"aad", b"hello").unwrap();
-/// let pt = Suite::open_base(&enc, &sk_r, b"info", b"aad", &ct).unwrap();
-/// assert_eq!(pt, b"hello");
-/// ```
+/// Zero-sized: the ciphersuite lives entirely in the type, every operation is an
+/// associated function, and no PRNG is owned by the configuration. See the crate
+/// documentation for a worked example.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Hpke<K: Kem, F: Kdf, A: Aead>(PhantomData<(K, F, A)>);
 
+/// RFC 9180 §5.1 mode identifiers, as bound into `ks_context`.
 pub(crate) mod modes {
 	pub const BASE: u8 = 0x00;
 	pub const PSK: u8 = 0x01;
@@ -107,8 +95,12 @@ pub(crate) mod modes {
 	pub const AUTH_PSK: u8 = 0x03;
 }
 
-/// Sealed marker supertrait for all four HPKE modes.
-/// For internal and test-harness use only; not part of the public API.
+/// Sealed marker supertrait for the four HPKE modes.
+///
+/// This trait and the four tag types below are `#[doc(hidden)]` and exist so the
+/// key schedule can be specialized per mode at compile time. They are reachable
+/// from outside only through the `hazmat-` test harnesses; treat them as
+/// internal.
 #[doc(hidden)]
 pub trait HpkeMode: sealed::Sealed {
 	/// The RFC 9180 mode byte for this mode.
@@ -116,31 +108,29 @@ pub trait HpkeMode: sealed::Sealed {
 	const MODE_BYTE: u8;
 }
 
-/// Sealed marker trait for PSK-free HPKE modes (Base and Auth).
+/// Marker for the PSK-free modes, Base and Auth. Selects
+/// [`key_schedule_psk_free`].
 #[doc(hidden)]
 pub trait PskFreeMode: HpkeMode {}
 
-/// Sealed marker trait for PSK-bearing HPKE modes (PSK and AuthPSK).
+/// Marker for the PSK-bearing modes, PSK and `AuthPSK`. Selects
+/// [`key_schedule_psk`].
 #[doc(hidden)]
 pub trait PskMode: HpkeMode {}
 
-/// Mode tag for the HPKE Base mode (RFC 9180 §5.1.1).
-/// For internal and test-harness use only; not part of the public API.
+/// Base mode (RFC 9180 §5.1.1).
 #[doc(hidden)]
 pub struct BaseModeTag;
 
-/// Mode tag for the HPKE Auth mode (RFC 9180 §5.1.3).
-/// For internal and test-harness use only; not part of the public API.
+/// Auth mode (RFC 9180 §5.1.3).
 #[doc(hidden)]
 pub struct AuthModeTag;
 
-/// Mode tag for the HPKE PSK mode (RFC 9180 §5.1.2).
-/// For internal and test-harness use only; not part of the public API.
+/// PSK mode (RFC 9180 §5.1.2).
 #[doc(hidden)]
 pub struct PskModeTag;
 
-/// Mode tag for the HPKE AuthPSK mode (RFC 9180 §5.1.4).
-/// For internal and test-harness use only; not part of the public API.
+/// `AuthPSK` mode (RFC 9180 §5.1.4).
 #[doc(hidden)]
 pub struct AuthPskModeTag;
 
@@ -167,6 +157,8 @@ impl PskFreeMode for AuthModeTag {}
 impl PskMode for PskModeTag {}
 impl PskMode for AuthPskModeTag {}
 
+/// `suite_id = "HPKE" || kem_id || kdf_id || aead_id` (RFC 9180 §5.1), the
+/// domain separator for every key-schedule and exporter KDF call.
 #[inline]
 pub(crate) fn ciphersuite<K: Kem, F: Kdf, A: Aead>() -> [u8; 10] {
 	let mut s = [0u8; 10];
@@ -177,28 +169,9 @@ pub(crate) fn ciphersuite<K: Kem, F: Kdf, A: Aead>() -> [u8; 10] {
 	s
 }
 
-#[inline]
-fn verify_psk_inputs(mode: u8, psk: &[u8], psk_id: &[u8]) -> Result<(), HpkeError> {
-	let got_psk = !psk.is_empty();
-	let got_psk_id = !psk_id.is_empty();
-	if got_psk != got_psk_id {
-		return Err(HpkeError::InconsistentPsk);
-	}
-	if got_psk && (mode == modes::BASE || mode == modes::AUTH) {
-		return Err(HpkeError::UnnecessaryPsk);
-	}
-	if !got_psk && (mode == modes::PSK || mode == modes::AUTH_PSK) {
-		return Err(HpkeError::MissingPsk);
-	}
-	if got_psk && psk.len() < 32 {
-		return Err(HpkeError::InsecurePsk);
-	}
-	Ok(())
-}
-
-/// Key schedule for PSK-free HPKE modes (Base and Auth, RFC 9180 §5.1.1 and §5.1.3).
-/// `psk` and `psk_id` are structurally absent: the mode tag `M: PskFreeMode` enforces
-/// at compile time that only Base and Auth modes reach this path.
+/// Key schedule for the PSK-free modes (Base and Auth, RFC 9180 §5.1.1/§5.1.3).
+/// The PSK inputs are structurally absent; `M: PskFreeMode` makes routing a
+/// PSK-bearing mode through here a compile error.
 fn key_schedule_psk_free_impl<M: PskFreeMode, K: Kem, F: Kdf, A: Aead>(
 	shared_secret: &[u8],
 	info: &[u8],
@@ -207,13 +180,21 @@ fn key_schedule_psk_free_impl<M: PskFreeMode, K: Kem, F: Kdf, A: Aead>(
 	let psk_id_hash = labeled_extract::<F>(&[], &suite, b"psk_id_hash", &[]);
 	let info_hash = labeled_extract::<F>(&[], &suite, b"info_hash", info);
 
+	// `ks_context = mode || psk_id_hash || info_hash`, fed piecewise to each
+	// expand call rather than concatenated into a `Vec`.
 	let mode_arr = [M::MODE_BYTE];
-	// `ks_context = mode || psk_id_hash || info_hash`. Fed piecewise into
-	// each `expand_multi_info` call instead of allocating a flat `Vec`.
 	let ks_pieces: [&[u8]; 3] = [&mode_arr, &psk_id_hash, &info_hash];
 
 	let secret = Zeroizing::new(labeled_extract::<F>(shared_secret, &suite, b"secret", &[]));
-	let key = labeled_expand_pieces::<F>(&secret, &suite, b"key", &ks_pieces, A::KEY_LEN)?;
+	// Each output is wrapped as it is produced: a later `?` in this sequence
+	// would otherwise drop already-derived key material unscrubbed.
+	let key = Zeroizing::new(labeled_expand_pieces::<F>(
+		&secret,
+		&suite,
+		b"key",
+		&ks_pieces,
+		A::KEY_LEN,
+	)?);
 	let base_nonce = Zeroizing::new(labeled_expand_pieces::<F>(
 		&secret,
 		&suite,
@@ -221,12 +202,18 @@ fn key_schedule_psk_free_impl<M: PskFreeMode, K: Kem, F: Kdf, A: Aead>(
 		&ks_pieces,
 		A::NONCE_LEN,
 	)?);
-	let exporter_secret =
-		labeled_expand_pieces::<F>(&secret, &suite, b"exp", &ks_pieces, F::HASH_LEN)?;
-	Context::new(key, base_nonce, exporter_secret)
+	let exporter_secret = Zeroizing::new(labeled_expand_pieces::<F>(
+		&secret,
+		&suite,
+		b"exp",
+		&ks_pieces,
+		F::HASH_LEN,
+	)?);
+	Context::new(&key, &base_nonce, exporter_secret)
 }
 
-// Public-facing wrapper — visibility changes with feature gate.
+// Two wrappers because an item's visibility cannot itself be `cfg`-dependent:
+// the KAT harness needs these public, every other build wants them crate-private.
 #[cfg(not(feature = "hazmat-kat-internals"))]
 pub(crate) fn key_schedule_psk_free<M: PskFreeMode, K: Kem, F: Kdf, A: Aead>(
 	shared_secret: &[u8],
@@ -244,28 +231,39 @@ pub fn key_schedule_psk_free<M: PskFreeMode, K: Kem, F: Kdf, A: Aead>(
 	key_schedule_psk_free_impl::<M, K, F, A>(shared_secret, info)
 }
 
-/// Key schedule for PSK-bearing HPKE modes (PSK and `AuthPSK`, RFC 9180 §5.1.2 and §5.1.4).
-/// Validates that `psk` and `psk_id` are consistent and well-formed before deriving
-/// the context. The mode tag `M: PskMode` enforces at compile time that only PSK
-/// and `AuthPSK` modes reach this path.
+/// Key schedule for the PSK-bearing modes (PSK and `AuthPSK`, RFC 9180
+/// §5.1.2/§5.1.4). `M: PskMode` makes routing a PSK-free mode through here a
+/// compile error, and [`Psk`] carries the proof that its contents were already
+/// validated — so this path needs no input checks of its own.
 fn key_schedule_psk_impl<M: PskMode, K: Kem, F: Kdf, A: Aead>(
 	shared_secret: &[u8],
 	info: &[u8],
-	psk: &[u8],
-	psk_id: &[u8],
+	psk: Psk<'_>,
 ) -> Result<Context<K, F, A>, HpkeError> {
-	verify_psk_inputs(M::MODE_BYTE, psk, psk_id)?;
 	let suite = ciphersuite::<K, F, A>();
-	let psk_id_hash = labeled_extract::<F>(&[], &suite, b"psk_id_hash", psk_id);
+	let psk_id_hash = labeled_extract::<F>(&[], &suite, b"psk_id_hash", psk.id());
 	let info_hash = labeled_extract::<F>(&[], &suite, b"info_hash", info);
 
+	// `ks_context = mode || psk_id_hash || info_hash`, fed piecewise to each
+	// expand call rather than concatenated into a `Vec`.
 	let mode_arr = [M::MODE_BYTE];
-	// `ks_context = mode || psk_id_hash || info_hash`. Fed piecewise into
-	// each `expand_multi_info` call instead of allocating a flat `Vec`.
 	let ks_pieces: [&[u8]; 3] = [&mode_arr, &psk_id_hash, &info_hash];
 
-	let secret = Zeroizing::new(labeled_extract::<F>(shared_secret, &suite, b"secret", psk));
-	let key = labeled_expand_pieces::<F>(&secret, &suite, b"key", &ks_pieces, A::KEY_LEN)?;
+	let secret = Zeroizing::new(labeled_extract::<F>(
+		shared_secret,
+		&suite,
+		b"secret",
+		psk.secret(),
+	));
+	// Each output is wrapped as it is produced: a later `?` in this sequence
+	// would otherwise drop already-derived key material unscrubbed.
+	let key = Zeroizing::new(labeled_expand_pieces::<F>(
+		&secret,
+		&suite,
+		b"key",
+		&ks_pieces,
+		A::KEY_LEN,
+	)?);
 	let base_nonce = Zeroizing::new(labeled_expand_pieces::<F>(
 		&secret,
 		&suite,
@@ -273,21 +271,25 @@ fn key_schedule_psk_impl<M: PskMode, K: Kem, F: Kdf, A: Aead>(
 		&ks_pieces,
 		A::NONCE_LEN,
 	)?);
-	let exporter_secret =
-		labeled_expand_pieces::<F>(&secret, &suite, b"exp", &ks_pieces, F::HASH_LEN)?;
+	let exporter_secret = Zeroizing::new(labeled_expand_pieces::<F>(
+		&secret,
+		&suite,
+		b"exp",
+		&ks_pieces,
+		F::HASH_LEN,
+	)?);
 
-	Context::new(key, base_nonce, exporter_secret)
+	Context::new(&key, &base_nonce, exporter_secret)
 }
 
-// Public-facing wrapper — visibility changes with feature gate.
+// Same `cfg` pair as `key_schedule_psk_free` above.
 #[cfg(not(feature = "hazmat-kat-internals"))]
 pub(crate) fn key_schedule_psk<M: PskMode, K: Kem, F: Kdf, A: Aead>(
 	shared_secret: &[u8],
 	info: &[u8],
-	psk: &[u8],
-	psk_id: &[u8],
+	psk: Psk<'_>,
 ) -> Result<Context<K, F, A>, HpkeError> {
-	key_schedule_psk_impl::<M, K, F, A>(shared_secret, info, psk, psk_id)
+	key_schedule_psk_impl::<M, K, F, A>(shared_secret, info, psk)
 }
 
 #[cfg(feature = "hazmat-kat-internals")]
@@ -295,35 +297,10 @@ pub(crate) fn key_schedule_psk<M: PskMode, K: Kem, F: Kdf, A: Aead>(
 pub fn key_schedule_psk<M: PskMode, K: Kem, F: Kdf, A: Aead>(
 	shared_secret: &[u8],
 	info: &[u8],
-	psk: &[u8],
-	psk_id: &[u8],
+	psk: Psk<'_>,
 ) -> Result<Context<K, F, A>, HpkeError> {
-	key_schedule_psk_impl::<M, K, F, A>(shared_secret, info, psk, psk_id)
+	key_schedule_psk_impl::<M, K, F, A>(shared_secret, info, psk)
 }
-
-#[cfg(test)]
-mod ks_tests {
-	use super::*;
-
-	#[test]
-	fn psk_validation_matrix() {
-		use HpkeError::*;
-		let cases: &[(u8, &[u8], &[u8], Result<(), HpkeError>)] = &[
-			(modes::PSK, b"", b"some_id", Err(InconsistentPsk)),
-			(modes::PSK, &[0u8; 32], b"", Err(InconsistentPsk)),
-			(modes::PSK, b"", b"", Err(MissingPsk)),
-			(modes::BASE, &[0u8; 32], b"id", Err(UnnecessaryPsk)),
-			(modes::PSK, b"too short", b"id", Err(InsecurePsk)),
-			(modes::BASE, b"", b"", Ok(())),
-			(modes::PSK, &[0u8; 32], b"id", Ok(())),
-		];
-		for (mode, psk, psk_id, expected) in cases {
-			assert_eq!(verify_psk_inputs(*mode, psk, psk_id), *expected);
-		}
-	}
-}
-
-use rand_core::CryptoRng;
 
 impl<K: Kem, F: Kdf, A: Aead> Hpke<K, F, A> {
 	/// `SetupBaseS` (RFC 9180 §5.1.1).
@@ -347,38 +324,27 @@ impl<K: Kem, F: Kdf, A: Aead> Hpke<K, F, A> {
 		key_schedule_psk_free::<BaseModeTag, K, F, A>(ss.as_ref(), info).map(ReceiverContext::new)
 	}
 
-	/// `SetupPSKS` (RFC 9180 §5.1.2).
-	///
-	/// `psk` MUST be at least 32 bytes of high-entropy random data. Length is
-	/// enforced; entropy is the caller's responsibility — see
-	/// [`HpkeError::InsecurePsk`].
+	/// `SetupPSKS` (RFC 9180 §5.1.2). See [`Psk::new`] for the PSK requirements.
 	pub fn setup_sender_psk<R: CryptoRng>(
 		rng: &mut R,
 		pk_r: &K::PublicKey,
 		info: &[u8],
-		psk: &[u8],
-		psk_id: &[u8],
+		psk: Psk<'_>,
 	) -> Result<(K::EncappedKey, SenderContext<K, F, A>), HpkeError> {
 		let (ss, enc) = K::encap(rng, pk_r)?;
-		let ctx = key_schedule_psk::<PskModeTag, K, F, A>(ss.as_ref(), info, psk, psk_id)?;
+		let ctx = key_schedule_psk::<PskModeTag, K, F, A>(ss.as_ref(), info, psk)?;
 		Ok((enc, SenderContext::new(ctx)))
 	}
 
-	/// `SetupPSKR` (RFC 9180 §5.1.2).
-	///
-	/// `psk` MUST be at least 32 bytes of high-entropy random data. Length is
-	/// enforced; entropy is the caller's responsibility — see
-	/// [`HpkeError::InsecurePsk`].
+	/// `SetupPSKR` (RFC 9180 §5.1.2). See [`Psk::new`] for the PSK requirements.
 	pub fn setup_receiver_psk(
 		enc: &K::EncappedKey,
 		sk_r: &K::PrivateKey,
 		info: &[u8],
-		psk: &[u8],
-		psk_id: &[u8],
+		psk: Psk<'_>,
 	) -> Result<ReceiverContext<K, F, A>, HpkeError> {
 		let ss = K::decap(enc, sk_r)?;
-		key_schedule_psk::<PskModeTag, K, F, A>(ss.as_ref(), info, psk, psk_id)
-			.map(ReceiverContext::new)
+		key_schedule_psk::<PskModeTag, K, F, A>(ss.as_ref(), info, psk).map(ReceiverContext::new)
 	}
 }
 
@@ -409,33 +375,29 @@ impl<K: Kem, F: Kdf, A: SealingAead> Hpke<K, F, A> {
 	}
 
 	/// Single-shot Psk-mode encrypt (RFC 9180 §6.1).
-	#[allow(clippy::too_many_arguments)]
 	pub fn seal_psk<R: CryptoRng>(
 		rng: &mut R,
 		pk_r: &K::PublicKey,
 		info: &[u8],
 		aad: &[u8],
 		pt: &[u8],
-		psk: &[u8],
-		psk_id: &[u8],
+		psk: Psk<'_>,
 	) -> Result<(K::EncappedKey, Vec<u8>), HpkeError> {
-		let (enc, mut ctx) = Self::setup_sender_psk(rng, pk_r, info, psk, psk_id)?;
+		let (enc, mut ctx) = Self::setup_sender_psk(rng, pk_r, info, psk)?;
 		let ct = ctx.seal(aad, pt)?;
 		Ok((enc, ct))
 	}
 
 	/// Single-shot Psk-mode decrypt (RFC 9180 §6.1).
-	#[allow(clippy::too_many_arguments)]
 	pub fn open_psk(
 		enc: &K::EncappedKey,
 		sk_r: &K::PrivateKey,
 		info: &[u8],
 		aad: &[u8],
 		ct: &[u8],
-		psk: &[u8],
-		psk_id: &[u8],
+		psk: Psk<'_>,
 	) -> Result<Vec<u8>, HpkeError> {
-		let mut ctx = Self::setup_receiver_psk(enc, sk_r, info, psk, psk_id)?;
+		let mut ctx = Self::setup_receiver_psk(enc, sk_r, info, psk)?;
 		ctx.open(aad, ct)
 	}
 }
@@ -469,35 +431,31 @@ impl<K: AuthKem, F: Kdf, A: SealingAead> Hpke<K, F, A> {
 	}
 
 	/// Single-shot AuthPsk-mode encrypt (RFC 9180 §6.1).
-	#[allow(clippy::too_many_arguments)]
 	pub fn seal_auth_psk<R: CryptoRng>(
 		rng: &mut R,
 		pk_r: &K::PublicKey,
 		info: &[u8],
 		aad: &[u8],
 		pt: &[u8],
-		psk: &[u8],
-		psk_id: &[u8],
+		psk: Psk<'_>,
 		sk_s: &K::PrivateKey,
 	) -> Result<(K::EncappedKey, Vec<u8>), HpkeError> {
-		let (enc, mut ctx) = Self::setup_sender_auth_psk(rng, pk_r, info, psk, psk_id, sk_s)?;
+		let (enc, mut ctx) = Self::setup_sender_auth_psk(rng, pk_r, info, psk, sk_s)?;
 		let ct = ctx.seal(aad, pt)?;
 		Ok((enc, ct))
 	}
 
 	/// Single-shot AuthPsk-mode decrypt (RFC 9180 §6.1).
-	#[allow(clippy::too_many_arguments)]
 	pub fn open_auth_psk(
 		enc: &K::EncappedKey,
 		sk_r: &K::PrivateKey,
 		info: &[u8],
 		aad: &[u8],
 		ct: &[u8],
-		psk: &[u8],
-		psk_id: &[u8],
+		psk: Psk<'_>,
 		pk_s: &K::PublicKey,
 	) -> Result<Vec<u8>, HpkeError> {
-		let mut ctx = Self::setup_receiver_auth_psk(enc, sk_r, info, psk, psk_id, pk_s)?;
+		let mut ctx = Self::setup_receiver_auth_psk(enc, sk_r, info, psk, pk_s)?;
 		ctx.open(aad, ct)
 	}
 }
@@ -528,32 +486,28 @@ impl<K: Kem, F: Kdf, A: Aead> Hpke<K, F, A> {
 	}
 
 	/// Sender-side single-shot export — Psk mode.
-	#[allow(clippy::too_many_arguments)]
 	pub fn send_export_psk<R: CryptoRng>(
 		rng: &mut R,
 		pk_r: &K::PublicKey,
 		info: &[u8],
-		psk: &[u8],
-		psk_id: &[u8],
+		psk: Psk<'_>,
 		exporter_context: &[u8],
 		length: usize,
 	) -> Result<(K::EncappedKey, Vec<u8>), HpkeError> {
-		let (enc, ctx) = Self::setup_sender_psk(rng, pk_r, info, psk, psk_id)?;
+		let (enc, ctx) = Self::setup_sender_psk(rng, pk_r, info, psk)?;
 		Ok((enc, ctx.export(exporter_context, length)?))
 	}
 
 	/// Receiver-side single-shot export — Psk mode.
-	#[allow(clippy::too_many_arguments)]
 	pub fn receiver_export_psk(
 		enc: &K::EncappedKey,
 		sk_r: &K::PrivateKey,
 		info: &[u8],
-		psk: &[u8],
-		psk_id: &[u8],
+		psk: Psk<'_>,
 		exporter_context: &[u8],
 		length: usize,
 	) -> Result<Vec<u8>, HpkeError> {
-		let ctx = Self::setup_receiver_psk(enc, sk_r, info, psk, psk_id)?;
+		let ctx = Self::setup_receiver_psk(enc, sk_r, info, psk)?;
 		ctx.export(exporter_context, length)
 	}
 }
@@ -586,34 +540,30 @@ impl<K: AuthKem, F: Kdf, A: Aead> Hpke<K, F, A> {
 	}
 
 	/// Sender-side single-shot export — `AuthPsk` mode.
-	#[allow(clippy::too_many_arguments)]
 	pub fn send_export_auth_psk<R: CryptoRng>(
 		rng: &mut R,
 		pk_r: &K::PublicKey,
 		info: &[u8],
-		psk: &[u8],
-		psk_id: &[u8],
+		psk: Psk<'_>,
 		sk_s: &K::PrivateKey,
 		exporter_context: &[u8],
 		length: usize,
 	) -> Result<(K::EncappedKey, Vec<u8>), HpkeError> {
-		let (enc, ctx) = Self::setup_sender_auth_psk(rng, pk_r, info, psk, psk_id, sk_s)?;
+		let (enc, ctx) = Self::setup_sender_auth_psk(rng, pk_r, info, psk, sk_s)?;
 		Ok((enc, ctx.export(exporter_context, length)?))
 	}
 
 	/// Receiver-side single-shot export — `AuthPsk` mode.
-	#[allow(clippy::too_many_arguments)]
 	pub fn receiver_export_auth_psk(
 		enc: &K::EncappedKey,
 		sk_r: &K::PrivateKey,
 		info: &[u8],
-		psk: &[u8],
-		psk_id: &[u8],
+		psk: Psk<'_>,
 		pk_s: &K::PublicKey,
 		exporter_context: &[u8],
 		length: usize,
 	) -> Result<Vec<u8>, HpkeError> {
-		let ctx = Self::setup_receiver_auth_psk(enc, sk_r, info, psk, psk_id, pk_s)?;
+		let ctx = Self::setup_receiver_auth_psk(enc, sk_r, info, psk, pk_s)?;
 		ctx.export(exporter_context, length)
 	}
 }
@@ -642,39 +592,29 @@ impl<K: AuthKem, F: Kdf, A: Aead> Hpke<K, F, A> {
 		key_schedule_psk_free::<AuthModeTag, K, F, A>(ss.as_ref(), info).map(ReceiverContext::new)
 	}
 
-	/// `SetupAuthPSKS` (RFC 9180 §5.1.4).
-	///
-	/// `psk` MUST be at least 32 bytes of high-entropy random data. Length is
-	/// enforced; entropy is the caller's responsibility — see
-	/// [`HpkeError::InsecurePsk`].
+	/// `SetupAuthPSKS` (RFC 9180 §5.1.4). See [`Psk::new`] for the PSK requirements.
 	pub fn setup_sender_auth_psk<R: CryptoRng>(
 		rng: &mut R,
 		pk_r: &K::PublicKey,
 		info: &[u8],
-		psk: &[u8],
-		psk_id: &[u8],
+		psk: Psk<'_>,
 		sk_s: &K::PrivateKey,
 	) -> Result<(K::EncappedKey, SenderContext<K, F, A>), HpkeError> {
 		let (ss, enc) = K::auth_encap(rng, pk_r, sk_s)?;
-		let ctx = key_schedule_psk::<AuthPskModeTag, K, F, A>(ss.as_ref(), info, psk, psk_id)?;
+		let ctx = key_schedule_psk::<AuthPskModeTag, K, F, A>(ss.as_ref(), info, psk)?;
 		Ok((enc, SenderContext::new(ctx)))
 	}
 
-	/// `SetupAuthPSKR` (RFC 9180 §5.1.4).
-	///
-	/// `psk` MUST be at least 32 bytes of high-entropy random data. Length is
-	/// enforced; entropy is the caller's responsibility — see
-	/// [`HpkeError::InsecurePsk`].
+	/// `SetupAuthPSKR` (RFC 9180 §5.1.4). See [`Psk::new`] for the PSK requirements.
 	pub fn setup_receiver_auth_psk(
 		enc: &K::EncappedKey,
 		sk_r: &K::PrivateKey,
 		info: &[u8],
-		psk: &[u8],
-		psk_id: &[u8],
+		psk: Psk<'_>,
 		pk_s: &K::PublicKey,
 	) -> Result<ReceiverContext<K, F, A>, HpkeError> {
 		let ss = K::auth_decap(enc, sk_r, pk_s)?;
-		key_schedule_psk::<AuthPskModeTag, K, F, A>(ss.as_ref(), info, psk, psk_id)
+		key_schedule_psk::<AuthPskModeTag, K, F, A>(ss.as_ref(), info, psk)
 			.map(ReceiverContext::new)
 	}
 }

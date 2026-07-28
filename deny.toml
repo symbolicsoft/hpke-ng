@@ -1,0 +1,41 @@
+# cargo-deny configuration — https://embarkstudios.github.io/cargo-deny/
+#
+# Run locally with `cargo deny check`. CI runs the same command on every push.
+
+[advisories]
+version = 2
+# A yanked dependency in the lockfile is a release blocker for a crypto crate.
+yanked = "deny"
+
+[licenses]
+version = 2
+# Every license present in the graph today. MPL-2.0 appears only via the
+# `hpke-rs*` dev-dependencies used by the differential tests and benchmarks —
+# the published crate's own dependency tree is permissive throughout. Adding a
+# license here should be a deliberate decision, not a reflex to a red build.
+allow = [
+	"Apache-2.0",
+	"Apache-2.0 WITH LLVM-exception",
+	"BSD-1-Clause",
+	"BSD-2-Clause",
+	"BSD-3-Clause",
+	"MIT",
+	"MPL-2.0",
+	"Unicode-3.0",
+	"Unlicense",
+]
+
+[bans]
+# Duplicate versions are a build-time cost rather than a correctness problem,
+# and are usually not ours to fix. Wildcard version requirements are, and would
+# let a dependency change under us without a lockfile update.
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+# `rust-hpke` is a pinned-revision dev-dependency, used as the second
+# implementation in `tests/differential_rust_hpke.rs` and in the comparative
+# benchmark. It is not part of the published dependency graph.
+allow-git = ["https://github.com/rozbb/rust-hpke"]

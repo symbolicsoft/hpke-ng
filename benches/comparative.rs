@@ -867,6 +867,11 @@ fn bench_setup_x25519_chacha(c: &mut Criterion) {
 	// PSK mode setup (Base + Psk = 2 most-common modes)
 	let psk = [0xAAu8; 32];
 	let psk_id = b"psk-id";
+	// Both libraries bundle the PSK with its ID in a validated type. Build both
+	// bundles here rather than inside the timed closures, so the measurement is
+	// `setup_sender` in each case and not bundle construction.
+	let psk_ng = ng::Psk::new(&psk, psk_id).unwrap();
+	let rh_psk_mode = OpModeS::Psk(PskBundle::new(&psk, psk_id).unwrap());
 	let mut rs_psk = HpkeRs::<HpkeRustCrypto>::new(
 		Mode::Psk,
 		rs_types::KemAlgorithm::DhKem25519,
@@ -878,9 +883,7 @@ fn bench_setup_x25519_chacha(c: &mut Criterion) {
 	let mut g = c.benchmark_group("x25519_chacha20/setup_sender_psk");
 	rs_psk.seed(&SEED).unwrap();
 	g.bench_function("hpke_ng", |b| {
-		b.iter(|| {
-			Suite::setup_sender_psk(&mut prng, black_box(&pk_ng), b"info", &psk, psk_id).unwrap()
-		})
+		b.iter(|| Suite::setup_sender_psk(&mut prng, black_box(&pk_ng), b"info", psk_ng).unwrap())
 	});
 	g.bench_function("hpke_rs", |b| {
 		b.iter(|| {
@@ -898,7 +901,7 @@ fn bench_setup_x25519_chacha(c: &mut Criterion) {
 	g.bench_function("rust_hpke", |b| {
 		b.iter(|| {
 			hpke::setup_sender_with_rng::<RhChaCha20, RhHkdfSha256, RhX25519>(
-				&OpModeS::Psk(PskBundle::new(&psk, psk_id).unwrap()),
+				&rh_psk_mode,
 				black_box(&pk_psk_rh),
 				b"info",
 				&mut RhChaCha20Rng(&mut prng),

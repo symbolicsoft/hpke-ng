@@ -11,7 +11,7 @@ use hpke_ng::{
 		AuthModeTag, AuthPskModeTag, BaseModeTag, PskModeTag, key_schedule_psk,
 		key_schedule_psk_free,
 	},
-	ChaCha20Poly1305, DhKemX25519HkdfSha256, HkdfSha256,
+	ChaCha20Poly1305, DhKemX25519HkdfSha256, HkdfSha256, Psk,
 };
 
 /// Consume a length-prefixed slice from the front of `rest`. The first byte is
@@ -49,12 +49,17 @@ fuzz_target!(|data: &[u8]| {
 			>(shared_secret, info);
 		}
 		1 => {
-			let _ = key_schedule_psk::<
-				PskModeTag,
-				DhKemX25519HkdfSha256,
-				HkdfSha256,
-				ChaCha20Poly1305,
-			>(shared_secret, info, psk, psk_id);
+			// `Psk::new` is the only way to build the bundle, so it — not the
+			// key schedule — is where malformed PSK input is rejected. Fuzzing
+			// through it exercises both.
+			if let Ok(psk) = Psk::new(psk, psk_id) {
+				let _ = key_schedule_psk::<
+					PskModeTag,
+					DhKemX25519HkdfSha256,
+					HkdfSha256,
+					ChaCha20Poly1305,
+				>(shared_secret, info, psk);
+			}
 		}
 		2 => {
 			let _ = key_schedule_psk_free::<
@@ -65,12 +70,14 @@ fuzz_target!(|data: &[u8]| {
 			>(shared_secret, info);
 		}
 		_ => {
-			let _ = key_schedule_psk::<
-				AuthPskModeTag,
-				DhKemX25519HkdfSha256,
-				HkdfSha256,
-				ChaCha20Poly1305,
-			>(shared_secret, info, psk, psk_id);
+			if let Ok(psk) = Psk::new(psk, psk_id) {
+				let _ = key_schedule_psk::<
+					AuthPskModeTag,
+					DhKemX25519HkdfSha256,
+					HkdfSha256,
+					ChaCha20Poly1305,
+				>(shared_secret, info, psk);
+			}
 		}
 	}
 });

@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 
 use hkdf::{Hkdf, HkdfExtract};
 use sha2::{Sha256, Sha384, Sha512};
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroize;
 
 use crate::HpkeError;
 use crate::sealed::Sealed;
@@ -42,9 +42,8 @@ macro_rules! hkdf_impl {
 				for piece in ikm_pieces {
 					ext.input_ikm(piece);
 				}
-				// `hkdf` 0.12's `Output<H>` (a `GenericArray`) has no
-				// `ZeroizeOnDrop`. Copy the bytes out, then explicitly
-				// scrub the temporary before it goes out of scope.
+				// `finalize` hands back a `GenericArray` with no
+				// zeroize-on-drop, so scrub it once the bytes are copied out.
 				let (mut prk, _) = ext.finalize();
 				let result = prk.to_vec();
 				prk.as_mut_slice().zeroize();
@@ -56,6 +55,13 @@ macro_rules! hkdf_impl {
 				info_pieces: &[&[u8]],
 				out_len: usize,
 			) -> Result<Vec<u8>, HpkeError> {
+				// RFC 5869 §2.3 caps HKDF-Expand output at 255 * HashLen.
+				// Checked before allocating, so an oversized request is a clean
+				// error rather than a huge allocation — which on a `no_std`
+				// allocator would abort rather than unwind.
+				if out_len > 255 * $hash_len {
+					return Err(HpkeError::ExportLengthExceeded);
+				}
 				let hk =
 					Hkdf::<$hash>::from_prk(prk).map_err(|_| HpkeError::DeriveKeyPairError)?;
 				let mut out = alloc::vec![0u8; out_len];
@@ -103,16 +109,21 @@ pub(crate) fn labeled_extract<F: Kdf>(
 	F::extract(salt, &[b"HPKE-v1", suite_id, label, ikm])
 }
 
-/// At most 3 prefix slots + N user slots; current piecewise callers stay
-/// well under this. Used by both the extract and expand piecewise helpers.
+/// Slot budget for [`labeled_extract_pieces`]: 3 label slots plus the caller's
+/// IKM pieces. The deepest caller passes two (`dh1 || dh2` in auth-mode
+/// `extract_and_expand`), so 5 of 8 are used; exceeding the budget panics on the
+/// slice index rather than silently truncating.
 const MAX_EXTRACT_PIECES: usize = 8;
+
+/// Slot budget for [`labeled_expand_pieces`]: 4 label slots plus the caller's
+/// info pieces. The deepest callers pass three (a 3-element `kem_context`, or
+/// `mode || psk_id_hash || info_hash`), so 7 of 16 are used.
 const MAX_EXPAND_PIECES: usize = 16;
 
 /// HPKE `LabeledExtract` over piecewise IKM.
 ///
 /// Used when the caller already has `ikm` split across multiple slices and
 /// would otherwise have to concatenate them just to pass a single `&[u8]`.
-#[allow(dead_code)]
 pub(crate) fn labeled_extract_pieces<F: Kdf>(
 	salt: &[u8],
 	suite_id: &[u8],
@@ -132,7 +143,6 @@ pub(crate) fn labeled_extract_pieces<F: Kdf>(
 }
 
 /// HPKE `LabeledExpand` (RFC 9180 §4).
-#[allow(dead_code)]
 pub(crate) fn labeled_expand<F: Kdf>(
 	prk: &[u8],
 	suite_id: &[u8],
@@ -148,7 +158,6 @@ pub(crate) fn labeled_expand<F: Kdf>(
 }
 
 /// HPKE `LabeledExpand` over piecewise `info`.
-#[allow(dead_code)]
 pub(crate) fn labeled_expand_pieces<F: Kdf>(
 	prk: &[u8],
 	suite_id: &[u8],
@@ -171,19 +180,6 @@ pub(crate) fn labeled_expand_pieces<F: Kdf>(
 		all[4 + i] = p;
 	}
 	F::expand(prk, &all[..4 + n], out_len)
-}
-
-/// Convenience: extract → wrap in `Zeroizing` so the PRK is scrubbed when
-/// dropped. Used at every key-schedule site where the PRK is secret.
-#[allow(dead_code)]
-#[inline]
-pub(crate) fn labeled_extract_z<F: Kdf>(
-	salt: &[u8],
-	suite_id: &[u8],
-	label: &[u8],
-	ikm: &[u8],
-) -> Zeroizing<Vec<u8>> {
-	Zeroizing::new(labeled_extract::<F>(salt, suite_id, label, ikm))
 }
 
 #[cfg(test)]
@@ -234,6 +230,18 @@ mod tests {
 		let prk = [0u8; 32];
 		assert_eq!(
 			HkdfSha256::expand(&prk, &[b"info"], 8161),
+			Err(HpkeError::ExportLengthExceeded)
+		);
+	}
+
+	/// The RFC 5869 bound is checked before the output buffer is allocated.
+	/// Reaching the allocation with this length would abort the process rather
+	/// than return an error.
+	#[test]
+	fn expand_rejects_absurd_length_without_allocating() {
+		let prk = [0u8; 32];
+		assert_eq!(
+			HkdfSha256::expand(&prk, &[b"info"], usize::MAX),
 			Err(HpkeError::ExportLengthExceeded)
 		);
 	}
