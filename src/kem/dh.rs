@@ -415,7 +415,7 @@ impl<D: DiffieHellman> Kem for DhKem<D> {
 		sk_r: &Self::PrivateKey,
 	) -> Result<Self::SharedSecret, HpkeError> {
 		let pk_e = D::pk_from_bytes(enc.as_ref())?;
-		let dh = Zeroizing::new(D::dh(&sk_r.sk, &pk_e).map_err(|_| HpkeError::DecapError)?);
+		let dh = Zeroizing::new(D::dh(&sk_r.sk, &pk_e)?);
 		Ok(DhSharedSecret(extract_and_expand::<D>(
 			&dh,
 			&[enc.as_ref(), &sk_r.pk_bytes],
