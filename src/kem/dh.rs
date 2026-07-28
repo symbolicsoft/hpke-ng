@@ -432,12 +432,7 @@ impl<D: DiffieHellman, H: Kdf> Kem for DhKem<D, H> {
 		sk_r: &Self::PrivateKey,
 	) -> Result<Self::SharedSecret, HpkeError> {
 		let pk_e = D::pk_from_bytes(enc.as_ref())?;
-		// `D::dh` reports the RFC 9180 §7.1.4 all-zeros rejection as
-		// `EncapError`; relabel for the decapsulation direction.
 		let dh = Zeroizing::new(D::dh(&sk_r.sk, &pk_e).map_err(|_| HpkeError::DecapError)?);
-		// `sk_r.pk_bytes` was cached at construction time; using it here
-		// saves the base-point scalar mult that `sk_to_pk` would otherwise
-		// perform on every decap.
 		Ok(DhSharedSecret(extract_and_expand::<D, H>(
 			&dh,
 			&[enc.as_ref(), &sk_r.pk_bytes],
@@ -479,7 +474,6 @@ impl<D: DiffieHellman, H: Kdf> AuthKem for DhKem<D, H> {
 		pk_s: &Self::PublicKey,
 	) -> Result<Self::SharedSecret, HpkeError> {
 		let pk_e = D::pk_from_bytes(enc.as_ref())?;
-		// See `decap`: relabel the all-zeros rejection for this direction.
 		let dh1 = Zeroizing::new(D::dh(&sk_r.sk, &pk_e).map_err(|_| HpkeError::DecapError)?);
 		let dh2 = Zeroizing::new(D::dh(&sk_r.sk, &pk_s.0).map_err(|_| HpkeError::DecapError)?);
 		let pk_sender = D::pk_to_bytes(&pk_s.0);

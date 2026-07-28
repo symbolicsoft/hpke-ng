@@ -157,8 +157,6 @@ impl<K: Kem, F: Kdf, A: SealingAead> Context<K, F, A> {
 		if self.seq == u64::MAX {
 			return Err(HpkeError::MessageLimitReached);
 		}
-		// The per-message nonce is derived from the secret `base_nonce`;
-		// scrub the stack copy once the AEAD call has consumed it.
 		let nonce = Zeroizing::new(self.compute_nonce());
 		let ct = A::seal(&self.cipher, &nonce[..A::NONCE_LEN], aad, pt)?;
 		self.seq += 1; // checked above; cannot overflow
@@ -175,7 +173,6 @@ impl<K: Kem, F: Kdf, A: SealingAead> Context<K, F, A> {
 		if self.seq == u64::MAX {
 			return Err(HpkeError::MessageLimitReached);
 		}
-		// See `seal`: scrub the stack copy of the derived nonce.
 		let nonce = Zeroizing::new(self.compute_nonce());
 		let pt = A::open(&self.cipher, &nonce[..A::NONCE_LEN], aad, ct)?;
 		self.seq += 1;
