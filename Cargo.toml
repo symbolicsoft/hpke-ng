@@ -49,7 +49,7 @@ rand                = "0.10"
 rand_chacha         = "0.10"
 criterion           = { version = "0.8", features = ["html_reports"] }
 hex                 = "0.4"
-hpke                = { package = "hpke", version = "0.14", git = "https://github.com/rozbb/rust-hpke", rev = "57b14d8", features = ["x25519", "nistp", "aes", "chacha", "alloc", "mlkem"] }
+hpke                = { version = "0.14", default-features = false, features = ["x25519", "nistp", "aes", "chacha", "alloc", "mlkem"] }
 
 [profile.bench]
 lto = "thin"

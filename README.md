@@ -132,7 +132,7 @@ Build with `RUSTFLAGS="-C target-cpu=native"` to pick up AES-NI / SHA-NI where a
 cargo bench --features comparative --bench comparative
 ```
 
-This loads both `hpke-rs` (with its `experimental` feature, so the post-quantum KEM stubs are wired up) and `rust-hpke` (pinned to a v0.14 pre-release commit for X-Wing support) as dev-dependencies, and emits side-by-side criterion results for every supported ciphersuite. KEM-op rows for `hpke-rs` and `rust-hpke` carry a `_via_setup_*` suffix: neither library exposes raw `encap` / `decap` separable from setup, so those rows are explicitly *not* apples-to-apples with `hpke-ng`'s bare-operation rows.
+This loads both `hpke-rs` (with its `experimental` feature, so the post-quantum KEM stubs are wired up) and `rust-hpke` 0.14 (whose X-Wing support the comparison needs) as dev-dependencies, and emits side-by-side criterion results for every supported ciphersuite. KEM-op rows for `hpke-rs` and `rust-hpke` carry a `_via_setup_*` suffix: neither library exposes raw `encap` / `decap` separable from setup, so those rows are explicitly *not* apples-to-apples with `hpke-ng`'s bare-operation rows.
 
 ## Security posture
 
