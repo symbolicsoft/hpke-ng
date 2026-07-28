@@ -416,6 +416,9 @@ impl<D: DiffieHellman> Kem for DhKem<D> {
 	) -> Result<Self::SharedSecret, HpkeError> {
 		let pk_e = D::pk_from_bytes(enc.as_ref())?;
 		let dh = Zeroizing::new(D::dh(&sk_r.sk, &pk_e)?);
+		// `sk_r.pk_bytes` was cached at construction time; using it here
+		// saves the base-point scalar mult that `sk_to_pk` would otherwise
+		// perform on every decap.
 		Ok(DhSharedSecret(extract_and_expand::<D>(
 			&dh,
 			&[enc.as_ref(), &sk_r.pk_bytes],
