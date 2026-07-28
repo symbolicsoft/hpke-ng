@@ -169,7 +169,7 @@ impl<K: Kem, F: Kdf, A: SealingAead> Context<K, F, A> {
 		if self.seq == u64::MAX {
 			return Err(HpkeError::MessageLimitReached);
 		}
-		let nonce = self.compute_nonce();
+		let nonce = Zeroizing::new(self.compute_nonce());
 		let ct = A::seal(&self.cipher, &nonce[..A::NONCE_LEN], aad, pt)?;
 		self.seq += 1; // checked above; cannot overflow
 		Ok(ct)
@@ -185,7 +185,7 @@ impl<K: Kem, F: Kdf, A: SealingAead> Context<K, F, A> {
 		if self.seq == u64::MAX {
 			return Err(HpkeError::MessageLimitReached);
 		}
-		let nonce = self.compute_nonce();
+		let nonce = Zeroizing::new(self.compute_nonce());
 		let pt = A::open(&self.cipher, &nonce[..A::NONCE_LEN], aad, ct)?;
 		self.seq += 1;
 		Ok(pt)
