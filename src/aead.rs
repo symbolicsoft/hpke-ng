@@ -87,8 +87,6 @@ impl SealingAead for ChaCha20Poly1305 {
 			Nonce,
 			aead::{Aead as _, Payload},
 		};
-		// The nonce always has length `NONCE_LEN` here (sliced by the caller);
-		// the fallible conversion replaces `from_slice`'s panic with an error.
 		let nonce = Nonce::try_from(nonce).map_err(|_| HpkeError::SealError)?;
 		cipher
 			.encrypt(&nonce, Payload { msg: pt, aad })
@@ -104,7 +102,6 @@ impl SealingAead for ChaCha20Poly1305 {
 			Nonce,
 			aead::{Aead as _, Payload},
 		};
-		// See `seal` on the nonce-length invariant and fallible conversion.
 		let nonce = Nonce::try_from(nonce).map_err(|_| HpkeError::OpenError)?;
 		cipher
 			.decrypt(&nonce, Payload { msg: ct, aad })
@@ -141,7 +138,6 @@ impl SealingAead for Aes128Gcm {
 		pt: &[u8],
 	) -> Result<Vec<u8>, HpkeError> {
 		use aes_gcm::aead::Aead as _;
-		// See the ChaCha20-Poly1305 impl on the nonce-length invariant.
 		let nonce = aes_gcm::Nonce::try_from(nonce).map_err(|_| HpkeError::SealError)?;
 		cipher
 			.encrypt(&nonce, aead::Payload { msg: pt, aad })
@@ -154,7 +150,6 @@ impl SealingAead for Aes128Gcm {
 		ct: &[u8],
 	) -> Result<Vec<u8>, HpkeError> {
 		use aes_gcm::aead::Aead as _;
-		// See the ChaCha20-Poly1305 impl on the nonce-length invariant.
 		let nonce = aes_gcm::Nonce::try_from(nonce).map_err(|_| HpkeError::OpenError)?;
 		cipher
 			.decrypt(&nonce, aead::Payload { msg: ct, aad })
@@ -190,7 +185,6 @@ impl SealingAead for Aes256Gcm {
 		pt: &[u8],
 	) -> Result<Vec<u8>, HpkeError> {
 		use aes_gcm::aead::Aead as _;
-		// See the ChaCha20-Poly1305 impl on the nonce-length invariant.
 		let nonce = aes_gcm::Nonce::try_from(nonce).map_err(|_| HpkeError::SealError)?;
 		cipher
 			.encrypt(&nonce, aead::Payload { msg: pt, aad })
@@ -203,7 +197,6 @@ impl SealingAead for Aes256Gcm {
 		ct: &[u8],
 	) -> Result<Vec<u8>, HpkeError> {
 		use aes_gcm::aead::Aead as _;
-		// See the ChaCha20-Poly1305 impl on the nonce-length invariant.
 		let nonce = aes_gcm::Nonce::try_from(nonce).map_err(|_| HpkeError::OpenError)?;
 		cipher
 			.decrypt(&nonce, aead::Payload { msg: ct, aad })
