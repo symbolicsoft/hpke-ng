@@ -9,12 +9,13 @@ A clean-slate Rust implementation of [HPKE (RFC 9180)](https://www.rfc-editor.or
 
 ```rust
 use hpke_ng::*;
-use rand_core::OsRng;
+use rand::rngs::SysRng;
+use rand_core::UnwrapErr;
 
 type Suite = Hpke<DhKemX25519HkdfSha256, HkdfSha256, ChaCha20Poly1305>;
 
-let mut os = OsRng;
-let mut rng = os.unwrap_mut();
+let mut os = SysRng;
+let mut rng = UnwrapErr(&mut os);
 let (sk_r, pk_r) = DhKemX25519HkdfSha256::generate(&mut rng)?;
 let (enc, ct)  = Suite::seal_base(&mut rng, &pk_r, b"info", b"aad", b"hello")?;
 let pt         = Suite::open_base(&enc, &sk_r, b"info", b"aad", &ct)?;
@@ -36,12 +37,13 @@ The design takes one position on each: **no provider abstraction, no owned RNG, 
 
 - **Type-parameterized API.** `Hpke<K, F, A>` is zero-sized; the ciphersuite lives in the type system. Mismatched primitives are compile errors.
 - **Four explicit methods per mode.** `seal_base`, `seal_psk`, `seal_auth`, `seal_auth_psk` — no `Option<&[u8]>` parameters for required-by-mode arguments.
+- **Validated PSK bundle.** PSK modes take a single `Psk`, built by `Psk::new(secret, id)`, which enforces the RFC 9180 32-byte minimum up front. The PSK and its identifier — one secret, one usually public — cannot be transposed at a call site.
 - **Auth restricted to DHKEMs at the type level.** `Hpke::<XWingDraft06, ...>::seal_auth(...)` does not compile.
 - **Export-only restricted at the type level.** `Hpke::<_, _, ExportOnly>::seal_base(...)` does not compile; only `*_export*` methods are available.
 - **Type-tagged keys.** Private keys carry their KEM in their type, so passing a `DhKemP256` key into an X25519 suite is rejected by the compiler, not at runtime.
 - **Caller-provided RNG.** No PRNG owned by the configuration; cloning cannot alias randomness.
 - **Structural nonce-reuse prevention.** `Context` is non-cloneable and refuses to encrypt at `seq == u64::MAX`.
-- **`no_std` + `alloc`** by default. `std` feature for `std::error::Error` impl on `HpkeError`.
+- **`no_std` + `alloc`.** `HpkeError` implements `core::error::Error` regardless; the default `std` feature only forwards `std` to the AEAD and `subtle` dependencies.
 - **One provider stack.** All primitives from RustCrypto-org crates.
 
 ## Compile-time guarantees
@@ -52,13 +54,14 @@ The design takes one position on each: **no provider abstraction, no owned RNG, 
 | Using a wrong-KEM private key            | Runtime mismatch| Compile error (type-tagged)    |
 | Base-mode call with a PSK supplied       | Runtime error   | Compile error (no PSK param)   |
 | Encrypt with an `ExportOnly` AEAD        | Runtime error   | Compile error                  |
+| Transposing `psk` and `psk_id`           | Silent wrong key| Not expressible (one `Psk` arg)|
 
 ## Supported ciphersuites
 
 | Component | Variants |
 |-----------|----------|
 | KEMs      | `DhKemX25519HkdfSha256`, `DhKemX448HkdfSha512`, `DhKemP256HkdfSha256`, `DhKemP384HkdfSha384`, `DhKemP521HkdfSha512`, `DhKemK256HkdfSha256` |
-| KEMs (post-quantum, `pq` feature) | `XWingDraft06`, `MlKem768`, `MlKem1024` |
+| KEMs (post-quantum, `pq` feature) | `XWingDraft06`, `MlKem768`, `MlKem1024` — registered by [draft-ietf-hpke-pq](https://datatracker.ietf.org/doc/draft-ietf-hpke-pq/), not RFC 9180 |
 | KDFs      | `HkdfSha256`, `HkdfSha384`, `HkdfSha512` |
 | AEADs     | `Aes128Gcm`, `Aes256Gcm`, `ChaCha20Poly1305`, `ExportOnly` |
 | Modes     | Base, Psk, Auth, AuthPsk |
@@ -129,13 +132,13 @@ Build with `RUSTFLAGS="-C target-cpu=native"` to pick up AES-NI / SHA-NI where a
 cargo bench --features comparative --bench comparative
 ```
 
-This loads both `hpke-rs` (with its `experimental` feature, so the post-quantum KEM stubs are wired up) and `rust-hpke` (pinned to a v0.14 pre-release commit for X-Wing support) as dev-dependencies, and emits side-by-side criterion results for every supported ciphersuite. KEM-op rows for `hpke-rs` and `rust-hpke` carry a `_via_setup_*` suffix: neither library exposes raw `encap` / `decap` separable from setup, so those rows are explicitly *not* apples-to-apples with `hpke-ng`'s bare-operation rows.
+This loads both `hpke-rs` (with its `experimental` feature, so the post-quantum KEM stubs are wired up) and `rust-hpke` 0.14 (whose X-Wing support the comparison needs) as dev-dependencies, and emits side-by-side criterion results for every supported ciphersuite. KEM-op rows for `hpke-rs` and `rust-hpke` carry a `_via_setup_*` suffix: neither library exposes raw `encap` / `decap` separable from setup, so those rows are explicitly *not* apples-to-apples with `hpke-ng`'s bare-operation rows.
 
 ## Security posture
 
 The library responds to two classes of issue observed in prior implementations:
 
-- **Zero shared-secret check (RFC 9180 §7.1.4).** Enforced for X25519 and X448 using `subtle::ConstantTimeEq`.
+- **Zero shared-secret check (RFC 9180 §7.1.4).** Enforced for every DH group — X25519, X448 and the four prime-order curves — with `subtle::ConstantTimeEq`. It is unreachable on the prime-order curves given a validated public key and a non-zero scalar; it is kept there as defense in depth and for parity.
 - **Nonce counter wraparound.** Prevented structurally: `Context` uses a `u64` sequence number, refuses to encrypt at `u64::MAX`, and is non-cloneable so a counter cannot fork.
 
 The post-DH all-zeros check is constant-time. `Context` cannot be `Clone`d, so two ciphertexts cannot be produced under the same `(key, nonce)` from two copies of the same context.
@@ -153,23 +156,39 @@ This crate composes RustCrypto primitives. Constant-time properties are inherite
 | AES-128-GCM, AES-256-GCM | **CT only with hardware AES-NI/PCLMULQDQ.** Prefer `ChaCha20Poly1305` on platforms without these instructions. |
 | ML-KEM, X-Wing | CT per upstream documentation; both crates are pre-1.0. |
 
+## Zeroization
+
+Everything this crate controls is scrubbed: private keys, shared secrets, PRKs, candidate scalars, seeds, and the derived AEAD key and base nonce are held in `Zeroizing`/`ZeroizeOnDrop` wrappers, with explicit manual scrubbing wherever an upstream type lacks zeroize-on-drop (the X448 scalar and shared-secret point, `GenericArray` temporaries from `SecretKey::to_bytes` and `HkdfExtract::finalize`, and the ML-KEM/X-Wing shared-secret arrays).
+
+**Known limitation — HKDF/HMAC internal state.** The RustCrypto `hkdf`/`hmac` crates do not zeroize their internal HMAC state on drop. Every HKDF extract/expand operation therefore leaves PRK-derived ipad/opad block state transiently in freed memory. This is key-equivalent material: an attacker who can read process memory (core dumps, swap, a same-process memory-disclosure bug) could recover it while the allocation remains unreused. The limitation is shared by every RustCrypto-based HPKE implementation and cannot be fixed from this crate. Deployments with a strong memory-forensics threat model should disable core dumps and swap (or use encrypted swap) for processes holding HPKE keys.
+
 ## Testing
 
 ```bash
-cargo test                                                 # library + roundtrip
-cargo test --features pq                                   # + post-quantum tests
-cargo test --features pq,kat-internals                     # + RFC 9180 KAT
-cargo test --features pq,kat-internals --test compile_fail # + compile-time invariant tests
-cargo test --features pq,differential,kat-internals        # + cross-impl differential vs hpke-rs
+cargo test                                                        # library, roundtrip, negative matrix
+cargo test --features pq                                          # + post-quantum, X-Wing KAT, rust-hpke differential
+cargo test --features pq,hazmat-kat-internals                     # + RFC 9180 KAT
+cargo test --features pq,hazmat-kat-internals --test compile_fail # + compile-time invariant tests
+cargo test --features pq,hazmat-differential,hazmat-kat-internals # + differential vs hpke-rs
 ```
 
 To regenerate the compile-fail `.stderr` fixtures after an intentional change (e.g. a toolchain bump), run:
 ```bash
-TRYBUILD=overwrite cargo test --features pq,kat-internals --test compile_fail
+TRYBUILD=overwrite cargo test --features pq,hazmat-kat-internals --test compile_fail
 ```
 This rewrites the fixtures unconditionally and should not be used as the normal test invocation.
 
-Coverage includes 59 macro-generated roundtrip tests across every ciphersuite × mode combination, four `cargo-fuzz` targets (panics treated as bugs), differential testing against `hpke-rs` for wire-format interop, compile-fail tests that lock in type-system invariants (`Context` is non-cloneable, `ExportOnly` cannot seal, PQ KEMs cannot authenticate, PSK-free mode tags are rejected by PSK key schedule paths and vice versa, and external crates cannot implement the `sealed` supertrait), and unit tests that directly verify the RFC 9180 §5.2 nonce derivation formula (`nonce = base_nonce XOR I2OSP(seq, Nn)`) across specific sequence number boundary values. The full suite (without differential) runs in under two seconds.
+Coverage includes:
+
+- **Roundtrip matrix** — 57 macro-generated tests across every ciphersuite × mode combination.
+- **Negative matrix** — 19 tests asserting that each transcript input actually binds (`info`, `aad`, PSK, PSK ID, sender public key), that tampered, truncated and replayed ciphertexts are refused, and that a failed `open` leaves the sequence counter untouched.
+- **Known-answer tests** — the RFC 9180 vectors for X25519, X448, P-256, P-521 and secp256k1, plus the official X-Wing draft vectors.
+- **Cross-implementation differential** — against `hpke-rs` (X25519, P-256, secp256k1) and against `rust-hpke` (P-384, P-521, ML-KEM-768, ML-KEM-1024, X-Wing, with X25519/P-256 as controls). Between the two, every supported ciphersuite is checked against either published vectors or an independent implementation.
+- **Compile-fail tests** — locking in the type-system invariants: `Context` is non-cloneable, `ExportOnly` cannot seal, PQ KEMs cannot authenticate, each key-schedule path rejects the wrong mode tag, and external crates cannot implement the sealed supertrait.
+- **Unit tests** — including direct verification of the RFC 9180 §5.2 nonce derivation formula (`nonce = base_nonce XOR I2OSP(seq, Nn)`) at sequence-number boundaries.
+- **Fuzzing** — five `cargo-fuzz` targets over the parsers, `DeriveKeyPair`, the key schedule, and `open`; panics are treated as bugs.
+
+The full suite (without the `hpke-rs` differential) runs in under two seconds.
 
 ## Migration from `hpke-rs`
 

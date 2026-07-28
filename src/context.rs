@@ -11,13 +11,12 @@ use crate::ciphersuite;
 use crate::kdf::{Kdf, labeled_expand};
 use crate::kem::Kem;
 
-/// HPKE encryption/decryption context.
+/// HPKE encryption/decryption context. The AEAD cipher state is built once from
+/// the derived key and reused for every message.
 ///
-/// Holds an AEAD cipher state (constructed once from the derived key), the
-/// `base_nonce`, the `exporter_secret`, and a `u64` sequence counter.
-///
-/// **Not** `Clone`: copying a context would let two callers reuse the same
-/// `(key, base_nonce, seq)` and produce a nonce-reuse footgun.
+/// **Not** `Clone`: two copies would seal under the same `(key, base_nonce,
+/// seq)`, which is exactly the nonce reuse the sequence counter exists to
+/// prevent.
 pub struct Context<K: Kem, F: Kdf, A: Aead> {
 	cipher: A::Cipher,
 	base_nonce: Zeroizing<[u8; MAX_NONCE_LEN]>,
@@ -26,7 +25,11 @@ pub struct Context<K: Kem, F: Kdf, A: Aead> {
 	/// Raw AEAD key bytes — kept under cfg gate so the test/KAT/differential
 	/// harnesses can assert on them. Production builds carry only the
 	/// derived `cipher` state.
-	#[cfg(any(test, feature = "kat-internals", feature = "differential"))]
+	#[cfg(any(
+		test,
+		feature = "hazmat-kat-internals",
+		feature = "hazmat-differential"
+	))]
 	raw_key: Zeroizing<Vec<u8>>,
 	_kfa: PhantomData<(K, F, A)>,
 }
@@ -56,24 +59,29 @@ impl<A: Aead> AssertNonceRange<A> {
 }
 
 impl<K: Kem, F: Kdf, A: Aead> Context<K, F, A> {
+	/// The key and base nonce stay owned by the caller, which holds them in
+	/// [`Zeroizing`]; the exporter secret moves in. Between them, key material is
+	/// scrubbed however this function exits — including the early return from a
+	/// failed [`Aead::init`] and the key schedule's own error paths.
 	pub(crate) fn new(
-		key: Vec<u8>,
-		base_nonce: impl AsRef<[u8]>,
-		exporter_secret: Vec<u8>,
+		key: &Zeroizing<Vec<u8>>,
+		base_nonce: &[u8],
+		exporter_secret: Zeroizing<Vec<u8>>,
 	) -> Result<Self, HpkeError> {
-		// Wrap the raw key bytes in `Zeroizing` so the temporary heap
-		// allocation is scrubbed once the cipher has copied the material.
-		let key_z = Zeroizing::new(key);
-		let cipher = A::init(&key_z)?;
-		let mut nonce_arr = Zeroizing::new([0u8; MAX_NONCE_LEN]);
-		nonce_arr[..A::NONCE_LEN].copy_from_slice(base_nonce.as_ref());
+		let cipher = A::init(key)?;
+		let mut nonce = Zeroizing::new([0u8; MAX_NONCE_LEN]);
+		nonce[..A::NONCE_LEN].copy_from_slice(base_nonce);
 		Ok(Self {
 			cipher,
-			base_nonce: nonce_arr,
-			exporter_secret: Zeroizing::new(exporter_secret),
+			base_nonce: nonce,
+			exporter_secret,
 			seq: 0,
-			#[cfg(any(test, feature = "kat-internals", feature = "differential"))]
-			raw_key: Zeroizing::new(key_z.to_vec()),
+			#[cfg(any(
+				test,
+				feature = "hazmat-kat-internals",
+				feature = "hazmat-differential"
+			))]
+			raw_key: key.clone(),
 			_kfa: PhantomData,
 		})
 	}
@@ -113,31 +121,35 @@ impl<K: Kem, F: Kdf, A: Aead> Context<K, F, A> {
 	}
 }
 
-#[cfg(any(test, feature = "kat-internals", feature = "differential"))]
+/// Accessors for the KAT and differential harnesses, which assert on
+/// key-schedule outputs directly. Never compiled into a production build.
+#[cfg(any(
+	test,
+	feature = "hazmat-kat-internals",
+	feature = "hazmat-differential"
+))]
 impl<K: Kem, F: Kdf, A: Aead> Context<K, F, A> {
-	/// Test-only: expose the AEAD key.
+	/// The raw AEAD key.
 	#[must_use]
 	pub fn key(&self) -> &[u8] {
 		&self.raw_key
 	}
-	/// Test-only: expose the base nonce.
+	/// The base nonce.
 	#[must_use]
 	pub fn nonce(&self) -> &[u8] {
 		&self.base_nonce[..A::NONCE_LEN]
 	}
-	/// Test-only: expose the exporter secret.
+	/// The exporter secret.
 	#[must_use]
 	pub fn exporter_secret(&self) -> &[u8] {
 		&self.exporter_secret
 	}
-	/// Test-only: expose the sequence number.
+	/// The current sequence number.
 	#[must_use]
 	pub fn sequence_number(&self) -> u64 {
 		self.seq
 	}
-	/// Test-only: set the sequence number directly. Used for boundary tests
-	/// (e.g. asserting that `seal` near `u64::MAX` returns `MessageLimitReached`
-	/// rather than wrapping).
+	/// Sets the sequence number, for the `u64::MAX` boundary tests.
 	#[cfg(test)]
 	pub(crate) fn set_seq_for_test(&mut self, seq: u64) {
 		self.seq = seq;
@@ -147,11 +159,11 @@ impl<K: Kem, F: Kdf, A: Aead> Context<K, F, A> {
 impl<K: Kem, F: Kdf, A: SealingAead> Context<K, F, A> {
 	/// `Context.Seal(aad, pt)` (RFC 9180 §5.2).
 	///
-	/// Pre-checks the sequence counter before encrypting: at `seq == u64::MAX`
-	/// the next encryption would reuse a nonce if the caller subsequently
-	/// ignored a `MessageLimitReached` error from `increment_seq`. Refusing to
-	/// encrypt at all makes nonce-reuse structurally impossible regardless of
-	/// caller behaviour.
+	/// The counter is checked *before* encrypting. Encrypting first and failing
+	/// on the increment afterwards would hand the caller a ciphertext produced
+	/// under a nonce the context can no longer advance past, so a caller who
+	/// ignored the error would reuse it. Refusing up front makes that
+	/// impossible regardless of caller behaviour.
 	#[inline]
 	pub(crate) fn seal(&mut self, aad: &[u8], pt: &[u8]) -> Result<Vec<u8>, HpkeError> {
 		if self.seq == u64::MAX {
@@ -165,9 +177,9 @@ impl<K: Kem, F: Kdf, A: SealingAead> Context<K, F, A> {
 
 	/// `Context.Open(aad, ct)` (RFC 9180 §5.2).
 	///
-	/// Same pre-check as `seal`: refuses to derive a nonce at `seq == u64::MAX`
-	/// rather than producing a recoverable plaintext that would leave the
-	/// receiver in a state where the next `open` reuses the same nonce.
+	/// Same pre-check as `seal`, for a different reason: incrementing past
+	/// `u64::MAX` would wrap the counter to zero, and the receiver would then
+	/// accept a replay of the very first message.
 	#[inline]
 	pub(crate) fn open(&mut self, aad: &[u8], ct: &[u8]) -> Result<Vec<u8>, HpkeError> {
 		if self.seq == u64::MAX {
@@ -182,27 +194,23 @@ impl<K: Kem, F: Kdf, A: SealingAead> Context<K, F, A> {
 
 /// Sender-side HPKE context — RFC 9180 §5.2 `ContextS`.
 ///
-/// Produced by the `setup_sender_*` functions. Exposes [`seal`](Self::seal)
-/// and [`export`](Self::export), but deliberately **not** `open`: an HPKE
-/// context is one-directional. A sender and the matching receiver derive the
-/// identical `(key, base_nonce)`, so if a single context could both seal and
-/// open, using one session in both directions would reuse a `(key, nonce)`
-/// pair — catastrophic for the AEAD. Splitting sender and receiver into
-/// distinct types makes that misuse a compile error.
+/// Returned by the `setup_sender_*` functions. Exposes [`seal`](Self::seal) and
+/// [`export`](Self::export) but deliberately not `open`, because an HPKE context
+/// is one-directional: sender and receiver derive the *identical*
+/// `(key, base_nonce)`, so one context used in both directions would reuse a
+/// `(key, nonce)` pair. Separate types make that a compile error.
 ///
-/// For a bidirectional channel, run a separate HPKE setup per direction, or
-/// derive independent per-direction keys via [`export`](Self::export)
-/// (RFC 9180 §9.8).
+/// For a bidirectional channel, run one HPKE setup per direction, or derive
+/// per-direction keys via [`export`](Self::export) (RFC 9180 §9.8).
 ///
-/// **Not** `Clone`: forking the `(key, base_nonce, seq)` state would reopen the
-/// nonce-reuse footgun.
+/// **Not** `Clone`, for the same reason as [`Context`].
 pub struct SenderContext<K: Kem, F: Kdf, A: Aead>(Context<K, F, A>);
 
 /// Receiver-side HPKE context — RFC 9180 §5.2 `ContextR`.
 ///
-/// Produced by the `setup_receiver_*` functions. Exposes [`open`](Self::open)
-/// and [`export`](Self::export), but deliberately **not** `seal`, for the same
-/// one-directional reason as [`SenderContext`]. **Not** `Clone`.
+/// Returned by the `setup_receiver_*` functions. Exposes [`open`](Self::open)
+/// and [`export`](Self::export) but not `seal`, for the same one-directional
+/// reason as [`SenderContext`]. **Not** `Clone`.
 pub struct ReceiverContext<K: Kem, F: Kdf, A: Aead>(Context<K, F, A>);
 
 impl<K: Kem, F: Kdf, A: Aead> SenderContext<K, F, A> {
@@ -210,10 +218,14 @@ impl<K: Kem, F: Kdf, A: Aead> SenderContext<K, F, A> {
 		Self(inner)
 	}
 
-	/// Test/KAT/differential-only: wrap a raw key-schedule [`Context`] as a
-	/// sender context (the harnesses build contexts from injected shared
-	/// secrets rather than through `setup_sender_*`).
-	#[cfg(any(test, feature = "kat-internals", feature = "differential"))]
+	/// Wraps a raw key-schedule [`Context`] as a sender context. The test
+	/// harnesses build contexts from injected shared secrets instead of going
+	/// through `setup_sender_*`.
+	#[cfg(any(
+		test,
+		feature = "hazmat-kat-internals",
+		feature = "hazmat-differential"
+	))]
 	#[doc(hidden)]
 	#[must_use]
 	pub fn from_context(inner: Context<K, F, A>) -> Self {
@@ -251,25 +263,29 @@ impl<K: Kem, F: Kdf, A: SealingAead> ReceiverContext<K, F, A> {
 	}
 }
 
-/// Test/KAT/differential accessors that delegate to the inner [`Context`].
-#[cfg(any(test, feature = "kat-internals", feature = "differential"))]
+/// The same harness accessors, delegating to the inner [`Context`].
+#[cfg(any(
+	test,
+	feature = "hazmat-kat-internals",
+	feature = "hazmat-differential"
+))]
 impl<K: Kem, F: Kdf, A: Aead> ReceiverContext<K, F, A> {
-	/// Test-only: expose the AEAD key.
+	/// The raw AEAD key.
 	#[must_use]
 	pub fn key(&self) -> &[u8] {
 		self.0.key()
 	}
-	/// Test-only: expose the base nonce.
+	/// The base nonce.
 	#[must_use]
 	pub fn nonce(&self) -> &[u8] {
 		self.0.nonce()
 	}
-	/// Test-only: expose the exporter secret.
+	/// The exporter secret.
 	#[must_use]
 	pub fn exporter_secret(&self) -> &[u8] {
 		self.0.exporter_secret()
 	}
-	/// Test-only: expose the sequence number.
+	/// The current sequence number.
 	#[must_use]
 	pub fn sequence_number(&self) -> u64 {
 		self.0.sequence_number()
@@ -283,14 +299,24 @@ mod tests {
 
 	type Ctx = Context<DhKemX25519HkdfSha256, HkdfSha256, ChaCha20Poly1305>;
 
+	/// Build a context from byte-fill values for the key, base nonce and
+	/// exporter secret.
+	fn new_test_ctx(key: u8, nonce: u8, exporter: u8) -> Ctx {
+		Context::new(
+			&Zeroizing::new(vec![key; 32]),
+			&[nonce; MAX_NONCE_LEN],
+			Zeroizing::new(vec![exporter; 32]),
+		)
+		.unwrap()
+	}
+
 	#[test]
 	fn seal_open_roundtrip_with_known_state() {
-		let key = vec![0x42u8; 32];
+		let key = Zeroizing::new(vec![0x42u8; 32]);
 		let base_nonce = vec![0x77u8; MAX_NONCE_LEN];
-		let exporter_secret = vec![0u8; 32];
-		let mut sender: Ctx =
-			Context::new(key.clone(), &base_nonce, exporter_secret.clone()).unwrap();
-		let mut receiver: Ctx = Context::new(key, base_nonce, exporter_secret).unwrap();
+		let exporter_secret = Zeroizing::new(vec![0u8; 32]);
+		let mut sender: Ctx = Context::new(&key, &base_nonce, exporter_secret.clone()).unwrap();
+		let mut receiver: Ctx = Context::new(&key, &base_nonce, exporter_secret).unwrap();
 
 		let ct = sender.seal(b"aad", b"message").unwrap();
 		let pt = receiver.open(b"aad", &ct).unwrap();
@@ -309,8 +335,7 @@ mod tests {
 
 	#[test]
 	fn export_is_deterministic() {
-		let ctx: Ctx =
-			Context::new(vec![0u8; 32], vec![0u8; MAX_NONCE_LEN], vec![1u8; 32]).unwrap();
+		let ctx: Ctx = new_test_ctx(0, 0, 1);
 		let a = ctx.export(b"context", 32).unwrap();
 		let b = ctx.export(b"context", 32).unwrap();
 		assert_eq!(a, b);
@@ -321,8 +346,7 @@ mod tests {
 
 	#[test]
 	fn export_length_bound() {
-		let ctx: Ctx =
-			Context::new(vec![0u8; 32], vec![0u8; MAX_NONCE_LEN], vec![1u8; 32]).unwrap();
+		let ctx: Ctx = new_test_ctx(0, 0, 1);
 		assert_eq!(
 			ctx.export(b"ctx", 8161),
 			Err(HpkeError::ExportLengthExceeded)
@@ -331,8 +355,7 @@ mod tests {
 
 	#[test]
 	fn nonce_derivation_xors_seq_into_base_nonce() {
-		let mut ctx: Ctx =
-			Context::new(vec![0u8; 32], vec![0u8; MAX_NONCE_LEN], vec![0u8; 32]).unwrap();
+		let mut ctx: Ctx = new_test_ctx(0, 0, 0);
 
 		// seq == 0: nonce must equal base_nonce exactly
 		let n0 = ctx.compute_nonce();
@@ -356,8 +379,7 @@ mod tests {
 
 	#[test]
 	fn seal_rejects_at_message_limit() {
-		let mut ctx: Ctx =
-			Context::new(vec![0x42u8; 32], vec![0x77u8; MAX_NONCE_LEN], vec![0u8; 32]).unwrap();
+		let mut ctx: Ctx = new_test_ctx(0x42, 0x77, 0);
 		ctx.set_seq_for_test(u64::MAX);
 		let r = ctx.seal(b"aad", b"hello");
 		assert_eq!(r, Err(HpkeError::MessageLimitReached));
@@ -365,8 +387,7 @@ mod tests {
 
 	#[test]
 	fn seal_succeeds_before_message_limit_then_fails() {
-		let mut ctx: Ctx =
-			Context::new(vec![0x42u8; 32], vec![0x77u8; MAX_NONCE_LEN], vec![0u8; 32]).unwrap();
+		let mut ctx: Ctx = new_test_ctx(0x42, 0x77, 0);
 		// Last valid sequence number --> seal must succeed.
 		ctx.set_seq_for_test(u64::MAX - 1);
 		assert!(ctx.seal(b"aad", b"hello").is_ok());
@@ -379,10 +400,8 @@ mod tests {
 
 	#[test]
 	fn open_rejects_at_message_limit() {
-		let mut ctx: Ctx =
-			Context::new(vec![0x42u8; 32], vec![0x77u8; MAX_NONCE_LEN], vec![0u8; 32]).unwrap();
-		let mut sibling: Ctx =
-			Context::new(vec![0x42u8; 32], vec![0x77u8; MAX_NONCE_LEN], vec![0u8; 32]).unwrap();
+		let mut ctx: Ctx = new_test_ctx(0x42, 0x77, 0);
+		let mut sibling: Ctx = new_test_ctx(0x42, 0x77, 0);
 		let ct = sibling.seal(b"aad", b"hello").unwrap();
 		ctx.set_seq_for_test(u64::MAX);
 		let r = ctx.open(b"aad", &ct);

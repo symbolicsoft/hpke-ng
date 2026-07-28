@@ -1,0 +1,33 @@
+# cargo-deny configuration — https://embarkstudios.github.io/cargo-deny/
+#
+# Run locally with `cargo deny check`. CI runs the same command on every push.
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = [
+	{ id = "RUSTSEC-2026-0173", reason = "unmaintained proc-macro, dev-dependency only, no upstream alternative yet" },
+]
+
+[licenses]
+version = 2
+include-dev = true
+allow = [
+	"Apache-2.0",
+	"BSD-1-Clause",
+	"BSD-2-Clause",
+	"BSD-3-Clause",
+	"ISC",
+	"MIT",
+	"MPL-2.0",
+	"Unicode-3.0",
+	"Unlicense",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

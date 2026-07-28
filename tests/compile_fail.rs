@@ -1,10 +1,17 @@
 //! To regenerate the compile-fail `.stderr` fixtures after
 //! an intentional change (e.g. a toolchain bump), run:
 //!
-//! `TRYBUILD=overwrite cargo test --features pq,kat-internals --test compile_fail`
+//! `TRYBUILD=overwrite cargo test --features pq,hazmat-kat-internals --test compile_fail`
 //!
 #[test]
 fn compile_fail() {
+	// The fixtures pin exact rustc diagnostics, which drift between compiler
+	// versions. CI therefore runs this suite only on the pinned MSRV toolchain
+	// and sets this variable on the others.
+	if std::env::var("HPKE_NG_SKIP_COMPILE_FAIL").is_ok_and(|v| !v.is_empty()) {
+		return;
+	}
+
 	let t = trybuild::TestCases::new();
 	// Cannot call `.clone()` on a `SenderContext`
 	t.compile_fail("tests/compile_fail/context_not_clone.rs");
@@ -26,4 +33,6 @@ fn compile_fail() {
 	t.compile_fail("tests/compile_fail/psk_rejects_auth_tag.rs");
 	// Cannot implement the `sealed` supertrait on an external type
 	t.compile_fail("tests/compile_fail/external_impl_sealed.rs");
+	// Cannot pair a DH group with a KDF other than the one its DHKEM is defined with
+	t.compile_fail("tests/compile_fail/dhkem_kdf_not_selectable.rs");
 }

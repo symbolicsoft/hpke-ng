@@ -1,7 +1,7 @@
 //! Cross-implementation differential test: feed identical inputs to `hpke-ng`
 //! and `hpke-rs` and assert byte-equal outputs.
 //!
-//! Run with: `cargo test --features differential,kat-internals --test differential`.
+//! Run with: `cargo test --features hazmat-differential,hazmat-kat-internals --test differential`.
 //!
 //! Strategy:
 //!   - Use `hpke-ng` as the *sender* with `encap_with_ikm` (deterministic ephemeral key).
@@ -12,17 +12,18 @@
 //! This avoids the PRNG-seeding impedance mismatch (hpke-rs seed injects raw
 //! bytes into `kem_key_gen`, not through `DeriveKeyPair`).
 //!
-//! P-384 and P-521 are omitted because hpke-rs-rust-crypto 0.6 only supports
-//! X25519, P-256, and secp256k1 (the `supports_kem` gate rejects others).
+//! `hpke-rs-rust-crypto` 0.6 supports only X25519, P-256 and secp256k1, so the
+//! remaining KEMs are compared against `rust-hpke` in
+//! `tests/differential_rust_hpke.rs` instead.
 
-#![cfg(feature = "differential")]
+#![cfg(feature = "hazmat-differential")]
 #![allow(non_snake_case)]
 
 use hpke_ng as ng;
 use hpke_rs::{Hpke as HpkeRs, Mode};
 use hpke_rs_crypto::types as rs_types;
 use hpke_rs_rust_crypto::HpkeRustCrypto as RsBackend;
-use rand::SeedableRng;
+use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 
 const ITERATIONS_DEFAULT: usize = 10;
@@ -49,7 +50,7 @@ macro_rules! diff_base_sealing {
 			for iter in 0..iterations() {
 				let mut buf = |n: usize| {
 					let mut v = vec![0u8; n];
-					rand::RngCore::fill_bytes(&mut rng, &mut v);
+					rng.fill_bytes(&mut v);
 					v
 				};
 				let info = buf(16);
@@ -159,7 +160,7 @@ macro_rules! diff_psk_sealing {
 			for iter in 0..iterations() {
 				let mut buf = |n: usize| {
 					let mut v = vec![0u8; n];
-					rand::RngCore::fill_bytes(&mut rng, &mut v);
+					rng.fill_bytes(&mut v);
 					v
 				};
 				let info = buf(16);
@@ -167,8 +168,9 @@ macro_rules! diff_psk_sealing {
 				let pt = buf(64);
 				let ikm_r = buf(64);
 				let ikm_e = buf(64);
-				let psk = buf(32);
-				let psk_id = buf(8);
+				let psk_bytes = buf(32);
+				let psk_id_bytes = buf(8);
+				let psk = ng::Psk::new(&psk_bytes, &psk_id_bytes).unwrap();
 
 				// --- Sender (hpke-ng) ---
 				let (sk_r_ng, pk_r_ng) = <$ng_kem as ng::Kem>::derive_key_pair(&ikm_r).unwrap();
@@ -183,7 +185,7 @@ macro_rules! diff_psk_sealing {
 							$ng_kem,
 							$ng_kdf,
 							$ng_aead,
-						>(ss_ng.as_ref(), &info, &psk, &psk_id)
+						>(ss_ng.as_ref(), &info, psk)
 						.unwrap(),
 					);
 				let ctxt_ng = send_ctx.seal(&aad, &pt).unwrap();
@@ -204,16 +206,15 @@ macro_rules! diff_psk_sealing {
 						enc_ng.as_ref(),
 						&sk_r_rs,
 						&info,
-						Some(&psk),
-						Some(&psk_id),
+						Some(&psk_bytes),
+						Some(&psk_id_bytes),
 						None,
 					)
 					.unwrap();
 
 				let enc_for_recv = <$ng_kem as ng::Kem>::enc_from_bytes(enc_ng.as_ref()).unwrap();
 				let recv_ng_ctx =
-					Suite::setup_receiver_psk(&enc_for_recv, &sk_r_ng, &info, &psk, &psk_id)
-						.unwrap();
+					Suite::setup_receiver_psk(&enc_for_recv, &sk_r_ng, &info, psk).unwrap();
 
 				assert_eq!(
 					recv_ng_ctx.key(),
@@ -237,8 +238,7 @@ macro_rules! diff_psk_sealing {
 
 				// hpke-ng receiver opens its own ciphertext (sanity check).
 				let mut recv_ng_ctx2 =
-					Suite::setup_receiver_psk(&enc_for_recv, &sk_r_ng, &info, &psk, &psk_id)
-						.unwrap();
+					Suite::setup_receiver_psk(&enc_for_recv, &sk_r_ng, &info, psk).unwrap();
 				let recovered_ng = recv_ng_ctx2.open(&aad, &ctxt_ng).unwrap();
 				assert_eq!(recovered_ng, pt, "ng open (iter {iter})");
 
@@ -314,9 +314,9 @@ diff_psk_sealing!(
 	0xEEEE_FFFF
 );
 
-// secp256k1: hpke-rs-rust-crypto supports DhKem25519, DhKemP256, and DhKemK256
-// only. X448, P-384, and P-521 cannot be differentially tested against this
-// backend; their interop coverage relies on the RFC 9180 KAT suite instead.
+// secp256k1 — the third and last KEM this backend supports. P-384, P-521 and the
+// PQ KEMs are covered in `differential_rust_hpke.rs`; X448 has no second
+// implementation available here and relies on the RFC 9180 KAT suite.
 diff_base_sealing!(
 	diff_k256_sha256_chacha20_base,
 	ng::DhKemK256HkdfSha256,

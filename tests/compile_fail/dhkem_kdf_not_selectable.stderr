@@ -1,0 +1,13 @@
+error[E0107]: struct takes 1 generic argument but 2 generic arguments were supplied
+ --> tests/compile_fail/dhkem_kdf_not_selectable.rs:9:16
+  |
+9 |     let _: Option<DhKem<X25519, HkdfSha512>> = None;
+  |                   ^^^^^       ------------ help: remove the unnecessary generic argument
+  |                   |
+  |                   expected 1 generic argument
+  |
+note: struct defined here, with 1 generic parameter: `D`
+ --> src/kem/dh.rs
+  |
+  | pub struct DhKem<D: DiffieHellman>(PhantomData<D>);
+  |            ^^^^^ -

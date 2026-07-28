@@ -7,14 +7,11 @@ use crate::sealed::Sealed;
 
 /// Sealed trait for HPKE-supported AEAD ciphersuite components.
 ///
-/// Implementors expose the IANA ID, length parameters, and a cached
-/// `Cipher` state. The cipher is materialized once at key-schedule time
-/// (see [`Aead::init`]) and reused for every subsequent
-/// [`SealingAead::seal`] / [`SealingAead::open`] call — eliminating the
-/// AES key-schedule expansion + `GHash` precompute cost on each AEAD
-/// operation. Sealing/opening live on the [`SealingAead`] subtrait so
-/// export-only configurations cannot be passed to `seal_*`/`open_*`
-/// methods.
+/// The cipher state is built once at key-schedule time by [`init`](Aead::init)
+/// and reused for every message, which keeps the AES key expansion and `GHash`
+/// precompute off the per-message path. Encryption itself lives on the
+/// [`SealingAead`] subtrait, so an export-only ciphersuite cannot reach
+/// `seal_*`/`open_*` at all.
 pub trait Aead: Sealed {
 	/// IANA AEAD ID (RFC 9180 §7.3).
 	const ID: u16;
@@ -25,24 +22,22 @@ pub trait Aead: Sealed {
 	/// Authentication tag length in bytes (`Nt`).
 	const TAG_LEN: usize;
 
-	/// Cached cipher state, derived from the key once at key-schedule
-	/// time. For ChaCha20-Poly1305 this stores the key (state is
-	/// re-initialized per call by the underlying primitive). For AES-GCM
-	/// this stores the expanded round keys + the precomputed `GHash` table —
-	/// the expensive part of every per-message call when the cipher is
-	/// reconstructed from raw bytes.
+	/// Cached cipher state. For ChaCha20-Poly1305 this is just the key, since
+	/// the primitive re-initializes per call anyway; for AES-GCM it is the
+	/// expanded round keys plus the precomputed `GHash` table, which is the
+	/// part worth not recomputing per message.
 	type Cipher;
 
 	/// Initialize the cached cipher state from a `KEY_LEN`-byte key.
 	fn init(key: &[u8]) -> Result<Self::Cipher, HpkeError>;
 }
 
-/// Marker subtrait for AEADs that actually encrypt (i.e. not export-only).
+/// Marker subtrait for AEADs that actually encrypt — that is, every one except
+/// [`ExportOnly`].
 ///
-/// Both `seal` and `open` collapse all underlying-cipher errors into a single
-/// typed error per direction (`SealError` / `OpenError`) — including the
-/// otherwise-unreachable "wrong key length" path. This keeps `open` failures
-/// indistinguishable to an attacker regardless of failure cause.
+/// Each direction collapses every underlying-cipher failure into one error
+/// ([`SealError`](HpkeError::SealError) / [`OpenError`](HpkeError::OpenError)),
+/// so an `open` failure discloses nothing about its cause.
 pub trait SealingAead: Aead {
 	/// Encrypt `pt` with the cached `cipher` state, `nonce`, and `aad`.
 	/// Output is `pt.len() + TAG_LEN` bytes.
@@ -291,6 +286,15 @@ mod tests {
 	fn aes128gcm_rejects_bad_key_len() {
 		let r = Aes128Gcm::init(&[0u8; 15]);
 		assert_eq!(r.err(), Some(HpkeError::AeadInitError));
+	}
+
+	/// Guards the `aes/zeroize` entry in `Cargo.toml`: `aes_gcm::AesGcm` has no
+	/// `Drop`, so without it the cached round keys survive in freed memory.
+	#[test]
+	fn aes_round_keys_are_scrubbed_on_drop() {
+		fn assert_zeroize_on_drop<T: zeroize::ZeroizeOnDrop>() {}
+		assert_zeroize_on_drop::<aes::Aes128>();
+		assert_zeroize_on_drop::<aes::Aes256>();
 	}
 
 	#[test]

@@ -8,5 +8,5 @@ fn main() {
 		DhKemX25519HkdfSha256,
 		HkdfSha256,
 		ChaCha20Poly1305,
-	>(&[0u8; 32], b"info", &[0u8; 32], b"psk-id");
+	>(&[0u8; 32], b"info", Psk::new(&[0u8; 32], b"psk-id").unwrap());
 }

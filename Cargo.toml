@@ -1,6 +1,6 @@
 [package]
 name         = "hpke-ng"
-version      = "0.1.0"
+version      = "0.2.0"
 edition      = "2024"
 rust-version = "1.96"
 license      = "Apache-2.0 OR MIT"
@@ -9,49 +9,50 @@ description  = "Clean, fast, RFC 9180 HPKE implementation."
 readme       = "README.md"
 keywords     = ["hpke", "crypto", "rfc9180", "encryption"]
 categories   = ["cryptography", "no-std"]
+exclude      = ["tests/test_vectors.json", "tests/test_vectors_k256.json"]
 
 [dependencies]
 zeroize          = { version = "1.8",  default-features = false, features = ["derive", "alloc"] }
 subtle           = { version = "2.6",  default-features = false }
-rand_core        = { version = "0.9",  default-features = false }
-rand_core_06     = { package = "rand_core", version = "0.6", default-features = false }
-rand_core_10     = { package = "rand_core", version = "0.10", default-features = false, optional = true }
+rand_core        = { version = "0.10", default-features = false }
 hkdf             = { version = "0.13", default-features = false }
 sha2             = { version = "0.11", default-features = false }
-sha3             = { version = "0.12", default-features = false }
 shake            = { version = "0.1",  default-features = false, optional = true }
 aead             = { version = "0.5",  default-features = false, features = ["alloc"] }
 aes-gcm          = { version = "0.10", default-features = false, features = ["aes", "alloc", "zeroize"] }
 chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
-x25519-dalek     = { version = "2",    default-features = false, features = ["zeroize", "static_secrets"] }
+aes              = { version = "0.8",  default-features = false, features = ["zeroize"] }
+ghash            = { version = "0.5",  default-features = false, features = ["zeroize"] }
+polyval          = { version = "0.6",  default-features = false, features = ["zeroize"] }
+x25519-dalek     = { version = "3",    default-features = false, features = ["zeroize", "static_secrets"] }
 ed448-goldilocks = { version = "0.14.0-pre.12", default-features = false }
-p256             = { version = "0.13", default-features = false, features = ["arithmetic", "ecdh"] }
-p384             = { version = "0.13", default-features = false, features = ["arithmetic", "ecdh"] }
-p521             = { version = "0.13", default-features = false, features = ["arithmetic", "ecdh"] }
-k256             = { version = "0.13", default-features = false, features = ["arithmetic", "ecdh"] }
+p256             = { version = "0.14", default-features = false, features = ["arithmetic", "ecdh"] }
+p384             = { version = "0.14", default-features = false, features = ["arithmetic", "ecdh"] }
+p521             = { version = "0.14", default-features = false, features = ["arithmetic", "ecdh"] }
+k256             = { version = "0.14", default-features = false, features = ["arithmetic", "ecdh"] }
 ml-kem           = { version = "0.3.2", default-features = false, features = ["zeroize"], optional = true }
-x-wing           = { version = "0.1.0-rc.0", default-features = false, features = ["zeroize"], optional = true }
+x-wing           = { version = "0.1.0", default-features = false, features = ["zeroize"], optional = true }
 
 [features]
-default       = ["std"]
-std           = ["rand_core/std", "subtle/std", "aes-gcm/std", "chacha20poly1305/std"]
-pq            = ["dep:ml-kem", "dep:x-wing", "dep:rand_core_10", "dep:shake"]
-differential  = []
-comparative   = ["pq"]
-kat-internals = []
+default = ["std"]
+std     = ["subtle/std", "aes-gcm/std", "chacha20poly1305/std"]
+pq      = ["dep:ml-kem", "dep:x-wing", "dep:shake"]
+comparative = ["pq"]
+hazmat-differential  = []
+hazmat-kat-internals = []
 
 [dev-dependencies]
-hpke-rs             = { version = "0.6", features = ["std", "rustcrypto", "hpke-test", "hpke-test-prng", "hazmat"] }
-hpke-rs-rust-crypto = { version = "0.6", features = ["experimental"] }
-hpke-rs-crypto      = "0.6"
+hpke-rs             = { version = "0.7", features = ["std", "rustcrypto", "hpke-test", "hpke-test-prng", "hazmat"] }
+hpke-rs-rust-crypto = { version = "0.7", features = ["experimental"] }
+hpke-rs-crypto      = "0.7"
 serde               = { version = "1", features = ["derive"] }
 serde_json          = "1"
 trybuild            = { version = "1", features = ["diff"] }
-rand                = "0.9"
-rand_chacha         = "0.9"
+rand                = "0.10"
+rand_chacha         = "0.10"
 criterion           = { version = "0.8", features = ["html_reports"] }
 hex                 = "0.4"
-hpke                = { package = "hpke", git = "https://github.com/rozbb/rust-hpke", rev = "2cbc9ca", features = ["x25519", "p256", "aes", "chacha", "alloc", "xwing"] }
+hpke                = { version = "0.14", default-features = false, features = ["x25519", "nistp", "aes", "chacha", "alloc", "mlkem"] }
 
 [profile.bench]
 lto = "thin"
@@ -59,11 +60,11 @@ codegen-units = 1
 
 [[test]]
 name = "kat"
-required-features = ["kat-internals"]
+required-features = ["hazmat-kat-internals"]
 
 [[test]]
 name = "compile_fail"
-required-features = ["pq"]
+required-features = ["pq", "hazmat-kat-internals"]
 
 [[bench]]
 name = "bench"

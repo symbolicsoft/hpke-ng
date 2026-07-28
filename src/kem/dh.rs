@@ -3,7 +3,7 @@
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 
-use rand_core::{CryptoRng, RngCore};
+use rand_core::CryptoRng;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::HpkeError;
@@ -13,36 +13,19 @@ use crate::kdf::{
 use crate::kem::{AuthKem, Kem};
 use crate::sealed::Sealed;
 
-mod rand_compat {
-	use rand_core::{CryptoRng, RngCore};
-
-	/// Wraps a `rand_core 0.9` RNG so it satisfies `rand_core 0.6` traits used
-	/// by older `RustCrypto` curve crates (`p256`, `p384`, `p521`, `k256`).
-	pub(crate) struct RngCompat<'a, R: RngCore + CryptoRng>(pub(crate) &'a mut R);
-
-	impl<R: RngCore + CryptoRng> rand_core_06::RngCore for RngCompat<'_, R> {
-		fn next_u32(&mut self) -> u32 {
-			self.0.next_u32()
-		}
-		fn next_u64(&mut self) -> u64 {
-			self.0.next_u64()
-		}
-		fn fill_bytes(&mut self, dest: &mut [u8]) {
-			self.0.fill_bytes(dest);
-		}
-		fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand_core_06::Error> {
-			self.fill_bytes(dest);
-			Ok(())
-		}
-	}
-	impl<R: RngCore + CryptoRng> rand_core_06::CryptoRng for RngCompat<'_, R> {}
-}
-
 /// Internal Diffie-Hellman primitive trait. Each curve provides one impl.
 ///
 /// Sealed via the crate's `Sealed` marker trait; downstream crates cannot implement.
 pub trait DiffieHellman: Sealed + 'static {
-	/// IANA KEM ID for `DHKEM(this group, ?)`.
+	/// The KDF this DHKEM is defined with (RFC 9180 §7.1).
+	///
+	/// Fixed per group rather than left as a parameter on [`DhKem`]: pairing a
+	/// group with any other KDF yields a ciphersuite that advertises this
+	/// group's [`ID`](Self::ID) while deriving different keys, which is not a
+	/// registered ciphersuite and cannot interoperate.
+	type Kdf: Kdf;
+
+	/// IANA KEM ID for this DHKEM.
 	const ID: u16;
 	/// Serialized length of a public key in bytes.
 	const PUBLIC_KEY_LEN: usize;
@@ -57,7 +40,7 @@ pub trait DiffieHellman: Sealed + 'static {
 	type PrivateKey: Zeroize + ZeroizeOnDrop;
 
 	/// Generate a fresh key pair using the provided RNG.
-	fn generate<R: CryptoRng + RngCore>(rng: &mut R) -> (Self::PrivateKey, Self::PublicKey);
+	fn generate<R: CryptoRng>(rng: &mut R) -> (Self::PrivateKey, Self::PublicKey);
 	/// Deterministically derive a key pair from input keying material.
 	fn derive(ikm: &[u8]) -> Result<(Self::PrivateKey, Self::PublicKey), HpkeError>;
 	/// Perform the Diffie-Hellman operation.
@@ -74,11 +57,11 @@ pub trait DiffieHellman: Sealed + 'static {
 	fn sk_to_pk(sk: &Self::PrivateKey) -> Self::PublicKey;
 }
 
-/// `DHKEM(DH, KDF)` — a generic DHKEM (RFC 9180 §4.1).
+/// `DHKEM(D, D::Kdf)` — a generic DHKEM (RFC 9180 §4.1).
 #[derive(Debug, Clone, Copy, Default)]
-pub struct DhKem<D: DiffieHellman, H: Kdf>(PhantomData<(D, H)>);
+pub struct DhKem<D: DiffieHellman>(PhantomData<D>);
 
-impl<D: DiffieHellman, H: Kdf> Sealed for DhKem<D, H> {}
+impl<D: DiffieHellman> Sealed for DhKem<D> {}
 
 /// Public-key wrapper holding the curve's bytes.
 pub struct DhPublicKey<D: DiffieHellman>(pub(crate) D::PublicKey);
@@ -170,6 +153,7 @@ impl Zeroize for DhSharedSecret {
 		self.0.zeroize();
 	}
 }
+impl ZeroizeOnDrop for DhSharedSecret {}
 impl Drop for DhSharedSecret {
 	fn drop(&mut self) {
 		self.zeroize();
@@ -178,21 +162,18 @@ impl Drop for DhSharedSecret {
 
 #[inline]
 fn suite_id<D: DiffieHellman>() -> [u8; 5] {
-	let mut s = [0u8; 5];
-	s[..3].copy_from_slice(b"KEM");
-	s[3..].copy_from_slice(&D::ID.to_be_bytes());
-	s
+	crate::kem::kem_suite_id(D::ID)
 }
 
 #[inline]
-fn extract_and_expand<D: DiffieHellman, H: Kdf>(
+fn extract_and_expand<D: DiffieHellman>(
 	dh: &[u8],
 	kem_context: &[&[u8]],
 ) -> Result<Vec<u8>, HpkeError> {
 	let suite = suite_id::<D>();
 	// `eae_prk` is the PRK derived from the raw DH output; treat it as secret.
-	let eae_prk = Zeroizing::new(labeled_extract::<H>(&[], &suite, b"eae_prk", dh));
-	labeled_expand_pieces::<H>(
+	let eae_prk = Zeroizing::new(labeled_extract::<D::Kdf>(&[], &suite, b"eae_prk", dh));
+	labeled_expand_pieces::<D::Kdf>(
 		&eae_prk,
 		&suite,
 		b"shared_secret",
@@ -202,18 +183,18 @@ fn extract_and_expand<D: DiffieHellman, H: Kdf>(
 }
 
 #[inline]
-fn extract_and_expand_pieces<D: DiffieHellman, H: Kdf>(
+fn extract_and_expand_pieces<D: DiffieHellman>(
 	dh_pieces: &[&[u8]],
 	kem_context: &[&[u8]],
 ) -> Result<Vec<u8>, HpkeError> {
 	let suite = suite_id::<D>();
-	let eae_prk = Zeroizing::new(labeled_extract_pieces::<H>(
+	let eae_prk = Zeroizing::new(labeled_extract_pieces::<D::Kdf>(
 		&[],
 		&suite,
 		b"eae_prk",
 		dh_pieces,
 	));
-	labeled_expand_pieces::<H>(
+	labeled_expand_pieces::<D::Kdf>(
 		&eae_prk,
 		&suite,
 		b"shared_secret",
@@ -226,15 +207,15 @@ fn extract_and_expand_pieces<D: DiffieHellman, H: Kdf>(
 /// and secp256k1.
 ///
 /// Returns the first `nsk`-byte sequence whose `D::sk_from_bytes` succeeds.
-fn derive_p_curve_sk<D: DiffieHellman, H: Kdf>(
+fn derive_p_curve_sk<D: DiffieHellman>(
 	ikm: &[u8],
 	nsk: usize,
 	bitmask: u8,
 ) -> Result<Zeroizing<Vec<u8>>, HpkeError> {
 	let suite = suite_id::<D>();
-	let dkp_prk = Zeroizing::new(labeled_extract::<H>(&[], &suite, b"dkp_prk", ikm));
+	let dkp_prk = Zeroizing::new(labeled_extract::<D::Kdf>(&[], &suite, b"dkp_prk", ikm));
 	for counter in 0u8..=255 {
-		let mut bytes = Zeroizing::new(labeled_expand::<H>(
+		let mut bytes = Zeroizing::new(labeled_expand::<D::Kdf>(
 			&dkp_prk,
 			&suite,
 			b"candidate",
@@ -278,20 +259,22 @@ macro_rules! nist_curve {
 			const PRIVATE_KEY_LEN: usize = $nsk;
 			const SHARED_SECRET_LEN: usize = $nsecret;
 
+			type Kdf = $kdf;
 			type PublicKey = $pk_wrap;
 			type PrivateKey = $sk_wrap;
 
-			fn generate<R: CryptoRng + RngCore>(
+			fn generate<R: CryptoRng>(
 				rng: &mut R,
 			) -> (Self::PrivateKey, Self::PublicKey) {
-				let sk = $cn::SecretKey::random(&mut rand_compat::RngCompat(rng));
+				use $cn::elliptic_curve::Generate;
+				let sk = $cn::SecretKey::generate_from_rng(rng);
 				let pk = sk.public_key();
 				($sk_wrap(sk), $make_pk(pk))
 			}
 
 			fn derive(ikm: &[u8]) -> Result<(Self::PrivateKey, Self::PublicKey), HpkeError> {
-				let bytes = derive_p_curve_sk::<Self, $kdf>(ikm, $nsk, $bitmask)?;
-				let sk = $cn::SecretKey::from_bytes($cn::FieldBytes::from_slice(&bytes))
+				let bytes = derive_p_curve_sk::<Self>(ikm, $nsk, $bitmask)?;
+				let sk = $cn::SecretKey::from_slice(&bytes)
 					.map_err(|_| HpkeError::InvalidPrivateKey)?;
 				let pk = sk.public_key();
 				Ok(($sk_wrap(sk), $make_pk(pk)))
@@ -332,7 +315,7 @@ macro_rules! nist_curve {
 				if b.len() != $nsk {
 					return Err(HpkeError::InvalidPrivateKey);
 				}
-				$cn::SecretKey::from_bytes($cn::FieldBytes::from_slice(b))
+				$cn::SecretKey::from_slice(b)
 					.map($sk_wrap)
 					.map_err(|_| HpkeError::InvalidPrivateKey)
 			}
@@ -368,8 +351,8 @@ macro_rules! nist_curve {
 		}
 
 		fn $make_pk(pk: $cn::PublicKey) -> $pk_wrap {
-			use $cn::elliptic_curve::sec1::ToEncodedPoint;
-			let encoded = pk.to_encoded_point(false).as_bytes().to_vec();
+			use $cn::elliptic_curve::sec1::ToSec1Point;
+			let encoded = pk.to_sec1_point(false).as_bytes().to_vec();
 			$pk_wrap { pk, encoded }
 		}
 
@@ -378,13 +361,13 @@ macro_rules! nist_curve {
 
 		impl Zeroize for $sk_wrap {
 			fn zeroize(&mut self) {
-				// elliptic-curve 0.13's `SecretKey` has no public `Zeroize`
-				// impl; rely on its `Drop` by replacing `self.0` with a
-				// dummy non-zero scalar (= 1). Dropping the old value
-				// invokes its zeroize-on-drop.
+				// `SecretKey` scrubs itself on drop but exposes no `Zeroize`
+				// impl, so scrubbing early means dropping the old value:
+				// replace it with the scalar 1, which is the smallest valid
+				// stand-in (zero is not a valid secret key).
 				let mut dummy = [0u8; $nsk];
 				dummy[$nsk - 1] = 1;
-				let d = $cn::SecretKey::from_bytes($cn::FieldBytes::from_slice(&dummy))
+				let d = $cn::SecretKey::from_slice(&dummy)
 					.expect("scalar 1 is a valid secret key");
 				let _ = core::mem::replace(&mut self.0, d);
 			}
@@ -394,7 +377,7 @@ macro_rules! nist_curve {
 	};
 }
 
-impl<D: DiffieHellman, H: Kdf> Kem for DhKem<D, H> {
+impl<D: DiffieHellman> Kem for DhKem<D> {
 	const ID: u16 = D::ID;
 	const ENCAPPED_KEY_LEN: usize = D::PUBLIC_KEY_LEN;
 	const PUBLIC_KEY_LEN: usize = D::PUBLIC_KEY_LEN;
@@ -406,7 +389,7 @@ impl<D: DiffieHellman, H: Kdf> Kem for DhKem<D, H> {
 	type EncappedKey = DhEncappedKey;
 	type SharedSecret = DhSharedSecret;
 
-	fn generate<R: CryptoRng + RngCore>(
+	fn generate<R: CryptoRng>(
 		rng: &mut R,
 	) -> Result<(Self::PrivateKey, Self::PublicKey), HpkeError> {
 		let (sk, pk) = D::generate(rng);
@@ -420,11 +403,11 @@ impl<D: DiffieHellman, H: Kdf> Kem for DhKem<D, H> {
 		Ok((dh_sk, DhPublicKey(pk)))
 	}
 
-	fn encap<R: CryptoRng + RngCore>(
+	fn encap<R: CryptoRng>(
 		rng: &mut R,
 		pk_r: &Self::PublicKey,
 	) -> Result<(Self::SharedSecret, Self::EncappedKey), HpkeError> {
-		encap_with::<D, H, R>(rng, pk_r, None)
+		encap_with::<D, R>(rng, pk_r, None)
 	}
 
 	fn decap(
@@ -433,7 +416,7 @@ impl<D: DiffieHellman, H: Kdf> Kem for DhKem<D, H> {
 	) -> Result<Self::SharedSecret, HpkeError> {
 		let pk_e = D::pk_from_bytes(enc.as_ref())?;
 		let dh = Zeroizing::new(D::dh(&sk_r.sk, &pk_e).map_err(|_| HpkeError::DecapError)?);
-		Ok(DhSharedSecret(extract_and_expand::<D, H>(
+		Ok(DhSharedSecret(extract_and_expand::<D>(
 			&dh,
 			&[enc.as_ref(), &sk_r.pk_bytes],
 		)?))
@@ -459,13 +442,13 @@ impl<D: DiffieHellman, H: Kdf> Kem for DhKem<D, H> {
 	}
 }
 
-impl<D: DiffieHellman, H: Kdf> AuthKem for DhKem<D, H> {
-	fn auth_encap<R: CryptoRng + RngCore>(
+impl<D: DiffieHellman> AuthKem for DhKem<D> {
+	fn auth_encap<R: CryptoRng>(
 		rng: &mut R,
 		pk_r: &Self::PublicKey,
 		sk_s: &Self::PrivateKey,
 	) -> Result<(Self::SharedSecret, Self::EncappedKey), HpkeError> {
-		encap_with::<D, H, R>(rng, pk_r, Some(sk_s))
+		encap_with::<D, R>(rng, pk_r, Some(sk_s))
 	}
 
 	fn auth_decap(
@@ -474,17 +457,16 @@ impl<D: DiffieHellman, H: Kdf> AuthKem for DhKem<D, H> {
 		pk_s: &Self::PublicKey,
 	) -> Result<Self::SharedSecret, HpkeError> {
 		let pk_e = D::pk_from_bytes(enc.as_ref())?;
-		let dh1 = Zeroizing::new(D::dh(&sk_r.sk, &pk_e).map_err(|_| HpkeError::DecapError)?);
-		let dh2 = Zeroizing::new(D::dh(&sk_r.sk, &pk_s.0).map_err(|_| HpkeError::DecapError)?);
-		let pk_sender = D::pk_to_bytes(&pk_s.0);
-		Ok(DhSharedSecret(extract_and_expand_pieces::<D, H>(
+		let dh1 = Zeroizing::new(D::dh(&sk_r.sk, &pk_e)?);
+		let dh2 = Zeroizing::new(D::dh(&sk_r.sk, &pk_s.0)?);
+		Ok(DhSharedSecret(extract_and_expand_pieces::<D>(
 			&[&dh1, &dh2],
-			&[enc.as_ref(), &sk_r.pk_bytes, &pk_sender],
+			&[enc.as_ref(), &sk_r.pk_bytes, pk_s.0.as_ref()],
 		)?))
 	}
 }
 
-fn encap_with<D: DiffieHellman, H: Kdf, R: CryptoRng + RngCore>(
+fn encap_with<D: DiffieHellman, R: CryptoRng>(
 	rng: &mut R,
 	pk_r: &DhPublicKey<D>,
 	sk_sender: Option<&DhPrivateKey<D>>,
@@ -492,44 +474,46 @@ fn encap_with<D: DiffieHellman, H: Kdf, R: CryptoRng + RngCore>(
 	let (sk_e, pk_e) = D::generate(rng);
 	let dh1 = Zeroizing::new(D::dh(&sk_e, &pk_r.0)?);
 	let enc = D::pk_to_bytes(&pk_e);
-	let pk_recipient = D::pk_to_bytes(&pk_r.0);
+	// `pk_r` and `sk_s` both already carry their serialized public key, so
+	// `kem_context` borrows those bytes rather than re-serializing them.
+	let pk_recipient = pk_r.0.as_ref();
 
 	let ss = match sk_sender {
-		None => extract_and_expand::<D, H>(&dh1, &[&enc, &pk_recipient])?,
+		None => extract_and_expand::<D>(&dh1, &[&enc, pk_recipient])?,
 		Some(sk_s) => {
 			let dh2 = Zeroizing::new(D::dh(&sk_s.sk, &pk_r.0)?);
-			// Cached sender public-key bytes — no `sk_to_pk` round trip.
-			extract_and_expand_pieces::<D, H>(
-				&[&dh1, &dh2],
-				&[&enc, &pk_recipient, &sk_s.pk_bytes],
-			)?
+			extract_and_expand_pieces::<D>(&[&dh1, &dh2], &[&enc, pk_recipient, &sk_s.pk_bytes])?
 		}
 	};
 
 	Ok((DhSharedSecret(ss), DhEncappedKey(enc)))
 }
 
-/// Test-only API: encap with a caller-supplied IKM for the ephemeral key, used
-/// by KAT and differential test harnesses.
-#[cfg(any(test, feature = "kat-internals", feature = "differential"))]
-#[allow(dead_code)]
-pub(crate) fn encap_with_ikm<D: DiffieHellman, H: Kdf>(
+/// `Encap` with a caller-supplied ephemeral IKM, making the operation
+/// deterministic. Used by the differential harness, which needs both
+/// implementations to encapsulate to the same ephemeral key.
+#[cfg(any(
+	test,
+	feature = "hazmat-kat-internals",
+	feature = "hazmat-differential"
+))]
+pub(crate) fn encap_with_ikm<D: DiffieHellman>(
 	pk_r: &DhPublicKey<D>,
 	ikm_e: &[u8],
 ) -> Result<(DhSharedSecret, DhEncappedKey), HpkeError> {
 	let (sk_e, pk_e) = D::derive(ikm_e)?;
 	let dh = Zeroizing::new(D::dh(&sk_e, &pk_r.0)?);
 	let enc = D::pk_to_bytes(&pk_e);
-	let pk_rm = D::pk_to_bytes(&pk_r.0);
 	Ok((
-		DhSharedSecret(extract_and_expand::<D, H>(&dh, &[&enc, &pk_rm])?),
+		DhSharedSecret(extract_and_expand::<D>(&dh, &[&enc, pk_r.0.as_ref()])?),
 		DhEncappedKey(enc),
 	))
 }
 
-#[cfg(any(test, feature = "kat-internals", feature = "differential"))]
-#[allow(dead_code)]
-pub(crate) fn auth_encap_with_ikm<D: DiffieHellman, H: Kdf>(
+/// Auth-mode counterpart of [`encap_with_ikm`], used by the KEM-layer unit test
+/// that exercises `auth_encap`/`auth_decap` without the HPKE stack on top.
+#[cfg(test)]
+pub(crate) fn auth_encap_with_ikm<D: DiffieHellman>(
 	pk_r: &DhPublicKey<D>,
 	sk_s: &DhPrivateKey<D>,
 	ikm_e: &[u8],
@@ -538,33 +522,27 @@ pub(crate) fn auth_encap_with_ikm<D: DiffieHellman, H: Kdf>(
 	let dh1 = Zeroizing::new(D::dh(&sk_e, &pk_r.0)?);
 	let dh2 = Zeroizing::new(D::dh(&sk_s.sk, &pk_r.0)?);
 	let enc = D::pk_to_bytes(&pk_e);
-	let pk_recipient = D::pk_to_bytes(&pk_r.0);
 	Ok((
-		DhSharedSecret(extract_and_expand_pieces::<D, H>(
+		DhSharedSecret(extract_and_expand_pieces::<D>(
 			&[&dh1, &dh2],
-			&[&enc, &pk_recipient, &sk_s.pk_bytes],
+			&[&enc, pk_r.0.as_ref(), &sk_s.pk_bytes],
 		)?),
 		DhEncappedKey(enc),
 	))
 }
 
-#[cfg(any(test, feature = "kat-internals", feature = "differential"))]
-impl<D: DiffieHellman, H: Kdf> DhKem<D, H> {
-	/// Test-only: encap with a caller-supplied ephemeral IKM (deterministic).
+#[cfg(any(
+	test,
+	feature = "hazmat-kat-internals",
+	feature = "hazmat-differential"
+))]
+impl<D: DiffieHellman> DhKem<D> {
+	/// Deterministic `Encap`; see the free function of the same name.
 	pub fn encap_with_ikm(
 		pk_r: &<Self as Kem>::PublicKey,
 		ikm_e: &[u8],
 	) -> Result<(<Self as Kem>::SharedSecret, <Self as Kem>::EncappedKey), HpkeError> {
-		encap_with_ikm::<D, H>(pk_r, ikm_e)
-	}
-
-	/// Test-only: auth-encap with a caller-supplied ephemeral IKM.
-	pub fn auth_encap_with_ikm(
-		pk_r: &<Self as Kem>::PublicKey,
-		sk_s: &<Self as Kem>::PrivateKey,
-		ikm_e: &[u8],
-	) -> Result<(<Self as Kem>::SharedSecret, <Self as Kem>::EncappedKey), HpkeError> {
-		auth_encap_with_ikm::<D, H>(pk_r, sk_s, ikm_e)
+		encap_with_ikm::<D>(pk_r, ikm_e)
 	}
 }
 
@@ -584,10 +562,11 @@ impl DiffieHellman for X25519 {
 	const PRIVATE_KEY_LEN: usize = 32;
 	const SHARED_SECRET_LEN: usize = 32;
 
+	type Kdf = crate::HkdfSha256;
 	type PublicKey = X25519PublicKeyWrap;
 	type PrivateKey = X25519PrivateKeyWrap;
 
-	fn generate<R: CryptoRng + RngCore>(rng: &mut R) -> (Self::PrivateKey, Self::PublicKey) {
+	fn generate<R: CryptoRng>(rng: &mut R) -> (Self::PrivateKey, Self::PublicKey) {
 		let mut bytes = Zeroizing::new([0u8; 32]);
 		rng.fill_bytes(&mut bytes[..]);
 		// RFC 7748 §5: store the X25519 scalar in clamped final form so that
@@ -604,13 +583,8 @@ impl DiffieHellman for X25519 {
 
 	fn derive(ikm: &[u8]) -> Result<(Self::PrivateKey, Self::PublicKey), HpkeError> {
 		let suite = suite_id::<Self>();
-		let dkp_prk = Zeroizing::new(labeled_extract::<crate::HkdfSha256>(
-			&[],
-			&suite,
-			b"dkp_prk",
-			ikm,
-		));
-		let sk_bytes = Zeroizing::new(labeled_expand::<crate::HkdfSha256>(
+		let dkp_prk = Zeroizing::new(labeled_extract::<Self::Kdf>(&[], &suite, b"dkp_prk", ikm));
+		let sk_bytes = Zeroizing::new(labeled_expand::<Self::Kdf>(
 			&dkp_prk,
 			&suite,
 			b"sk",
@@ -660,7 +634,7 @@ impl DiffieHellman for X25519 {
 		if b.len() != 32 {
 			return Err(HpkeError::InvalidPrivateKey);
 		}
-		let mut arr = [0u8; 32];
+		let mut arr = Zeroizing::new([0u8; 32]);
 		arr.copy_from_slice(b);
 		// RFC 9180 §7.1.2 / RFC 7748 §5: clamp the X25519 scalar.
 		// x25519-dalek defers clamping to operation time (`mul_clamped`), but
@@ -668,7 +642,7 @@ impl DiffieHellman for X25519 {
 		arr[0] &= 0xF8;
 		arr[31] &= 0x7F;
 		arr[31] |= 0x40;
-		Ok(X25519PrivateKeyWrap(x25519_dalek::StaticSecret::from(arr)))
+		Ok(X25519PrivateKeyWrap(x25519_dalek::StaticSecret::from(*arr)))
 	}
 
 	fn pk_to_bytes(pk: &Self::PublicKey) -> Vec<u8> {
@@ -703,7 +677,7 @@ pub struct X25519PrivateKeyWrap(x25519_dalek::StaticSecret);
 
 impl Zeroize for X25519PrivateKeyWrap {
 	fn zeroize(&mut self) {
-		self.0.zeroize();
+		let _ = core::mem::replace(&mut self.0, x25519_dalek::StaticSecret::from([0u8; 32]));
 	}
 }
 
@@ -825,10 +799,11 @@ impl DiffieHellman for X448 {
 	const PRIVATE_KEY_LEN: usize = 56;
 	const SHARED_SECRET_LEN: usize = 64;
 
+	type Kdf = crate::HkdfSha512;
 	type PublicKey = X448PublicKeyWrap;
 	type PrivateKey = X448PrivateKeyWrap;
 
-	fn generate<R: CryptoRng + RngCore>(rng: &mut R) -> (Self::PrivateKey, Self::PublicKey) {
+	fn generate<R: CryptoRng>(rng: &mut R) -> (Self::PrivateKey, Self::PublicKey) {
 		let mut sk = Zeroizing::new([0u8; 56]);
 		rng.fill_bytes(&mut sk[..]);
 		// RFC 7748 §5: clamp the X448 scalar.
@@ -840,19 +815,8 @@ impl DiffieHellman for X448 {
 
 	fn derive(ikm: &[u8]) -> Result<(Self::PrivateKey, Self::PublicKey), HpkeError> {
 		let suite = suite_id::<Self>();
-		let prk = Zeroizing::new(labeled_extract::<crate::HkdfSha512>(
-			&[],
-			&suite,
-			b"dkp_prk",
-			ikm,
-		));
-		let bytes = Zeroizing::new(labeled_expand::<crate::HkdfSha512>(
-			&prk,
-			&suite,
-			b"sk",
-			&[],
-			56,
-		)?);
+		let prk = Zeroizing::new(labeled_extract::<Self::Kdf>(&[], &suite, b"dkp_prk", ikm));
+		let bytes = Zeroizing::new(labeled_expand::<Self::Kdf>(&prk, &suite, b"sk", &[], 56)?);
 		let mut sk = Zeroizing::new([0u8; 56]);
 		sk.copy_from_slice(&bytes);
 		// RFC 7748 §5: clamp the X448 scalar.
@@ -889,14 +853,14 @@ impl DiffieHellman for X448 {
 		if b.len() != 56 {
 			return Err(HpkeError::InvalidPrivateKey);
 		}
-		let mut arr = [0u8; 56];
+		let mut arr = Zeroizing::new([0u8; 56]);
 		arr.copy_from_slice(b);
 		// RFC 7748 §5: clamp the X448 scalar. The internal scalar-mult helpers
 		// assume a clamped scalar. `generate` and `derive` already clamp;
 		// wire-loaded keys must be clamped here so that all paths agree.
 		arr[0] &= 0xFC;
 		arr[55] |= 0x80;
-		Ok(X448PrivateKeyWrap(arr))
+		Ok(X448PrivateKeyWrap(*arr))
 	}
 
 	fn pk_to_bytes(pk: &Self::PublicKey) -> Vec<u8> {
@@ -944,27 +908,28 @@ impl Drop for X448PrivateKeyWrap {
 // ---------------------------------------------------------------------------
 
 /// `DHKEM(X25519, HKDF-SHA256)` — RFC 9180 ID `0x0020`.
-pub type DhKemX25519HkdfSha256 = DhKem<X25519, crate::HkdfSha256>;
+pub type DhKemX25519HkdfSha256 = DhKem<X25519>;
 
 /// `DHKEM(P-256, HKDF-SHA256)` — RFC 9180 ID `0x0010`.
-pub type DhKemP256HkdfSha256 = DhKem<P256, crate::HkdfSha256>;
+pub type DhKemP256HkdfSha256 = DhKem<P256>;
 
 /// `DHKEM(P-384, HKDF-SHA384)` — RFC 9180 ID `0x0011`.
-pub type DhKemP384HkdfSha384 = DhKem<P384, crate::HkdfSha384>;
+pub type DhKemP384HkdfSha384 = DhKem<P384>;
 
 /// `DHKEM(P-521, HKDF-SHA512)` — RFC 9180 ID `0x0012`.
-pub type DhKemP521HkdfSha512 = DhKem<P521, crate::HkdfSha512>;
+pub type DhKemP521HkdfSha512 = DhKem<P521>;
 
 /// `DHKEM(secp256k1, HKDF-SHA256)` — IANA HPKE KEM ID `0x0016` (post-RFC-9180).
-pub type DhKemK256HkdfSha256 = DhKem<K256, crate::HkdfSha256>;
+pub type DhKemK256HkdfSha256 = DhKem<K256>;
 
 /// `DHKEM(X448, HKDF-SHA512)` — RFC 9180 ID `0x0021`.
-pub type DhKemX448HkdfSha512 = DhKem<X448, crate::HkdfSha512>;
+pub type DhKemX448HkdfSha512 = DhKem<X448>;
 
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use rand_core::{OsRng, TryRngCore as _};
+	use rand::rngs::SysRng;
+	use rand_core::UnwrapErr;
 
 	// Roundtrip and auth-roundtrip coverage lives in `tests/roundtrip.rs`
 	// (one `#[test]` per `(mode, KEM, KDF, AEAD)` combination via macro).
@@ -975,22 +940,11 @@ mod tests {
 	/// shared secret) MUST be rejected in constant time.
 	#[test]
 	fn x25519_rejects_small_order_zero_pk() {
-		type Suite = DhKem<X25519, crate::HkdfSha256>;
+		type Suite = DhKem<X25519>;
 		let pk_zero = Suite::pk_from_bytes(&[0u8; 32]).unwrap();
-		let mut os_rng = OsRng;
-		let r = Suite::encap(&mut os_rng.unwrap_mut(), &pk_zero);
+		let mut os_rng = SysRng;
+		let r = Suite::encap(&mut UnwrapErr(&mut os_rng), &pk_zero);
 		assert_eq!(r.err(), Some(HpkeError::EncapError));
-	}
-
-	/// The all-zeros rejection must surface as `DecapError` on the receiver
-	/// side (`D::dh` reports it as `EncapError`; `decap` relabels it).
-	#[test]
-	fn x25519_decap_rejects_small_order_zero_enc() {
-		type Suite = DhKem<X25519, crate::HkdfSha256>;
-		let mut os_rng = OsRng;
-		let (sk_r, _) = Suite::generate(&mut os_rng.unwrap_mut()).unwrap();
-		let enc = Suite::enc_from_bytes(&[0u8; 32]).unwrap();
-		assert_eq!(Suite::decap(&enc, &sk_r).err(), Some(HpkeError::DecapError));
 	}
 
 	/// RFC 7748 §5: load the same X448 scalar with and without pre-clamping;
@@ -1010,8 +964,8 @@ mod tests {
 			X448::sk_to_pk(&sk_u).as_ref(),
 			X448::sk_to_pk(&sk_c).as_ref()
 		);
-		let mut os_rng = OsRng;
-		let (_, pk_peer) = X448::generate(&mut os_rng.unwrap_mut());
+		let mut os_rng = SysRng;
+		let (_, pk_peer) = X448::generate(&mut UnwrapErr(&mut os_rng));
 		assert_eq!(
 			X448::dh(&sk_u, &pk_peer).unwrap(),
 			X448::dh(&sk_c, &pk_peer).unwrap(),
@@ -1031,12 +985,9 @@ mod tests {
 
 		let kem_context: &[&[u8]] = &[b"enc_bytes", b"pk_recipient"];
 
-		let single =
-			extract_and_expand::<X25519, crate::HkdfSha256>(&dh_concat, kem_context).unwrap();
+		let single = extract_and_expand::<X25519>(&dh_concat, kem_context).unwrap();
 
-		let pieces =
-			extract_and_expand_pieces::<X25519, crate::HkdfSha256>(&[&dh1, &dh2], kem_context)
-				.unwrap();
+		let pieces = extract_and_expand_pieces::<X25519>(&[&dh1, &dh2], kem_context).unwrap();
 
 		assert_eq!(single, pieces);
 	}
@@ -1046,14 +997,13 @@ mod tests {
 	// at the KEM layer (rather than somewhere in the key schedule or AEAD on top of it).
 	#[test]
 	fn x25519_auth_encap_decap_roundtrip() {
-		type Suite = DhKem<X25519, crate::HkdfSha256>;
+		type Suite = DhKem<X25519>;
 
 		let (sk_r, pk_r) = Suite::derive_key_pair(b"auth-test-recipient-ikm").unwrap();
 		let (sk_s, pk_s) = Suite::derive_key_pair(b"auth-test-sender-ikm").unwrap();
 
 		let ikm_e = b"auth-test-ephemeral-ikm";
-		let (ss_enc, enc) =
-			auth_encap_with_ikm::<X25519, crate::HkdfSha256>(&pk_r, &sk_s, ikm_e).unwrap();
+		let (ss_enc, enc) = auth_encap_with_ikm::<X25519>(&pk_r, &sk_s, ikm_e).unwrap();
 
 		let ss_dec = Suite::auth_decap(&enc, &sk_r, &pk_s).unwrap();
 
@@ -1077,8 +1027,8 @@ mod tests {
 	/// `kem_context` as a receiver deriving `pk_r` from `sk_r`.
 	#[test]
 	fn x25519_pk_from_bytes_masks_high_bit() {
-		let mut os_rng = OsRng;
-		let (_, pk_c) = X25519::generate(&mut os_rng.unwrap_mut());
+		let mut os_rng = SysRng;
+		let (_, pk_c) = X25519::generate(&mut UnwrapErr(&mut os_rng));
 		let mut tampered = [0u8; 32];
 		tampered.copy_from_slice(pk_c.as_ref());
 		tampered[31] |= 0x80;
@@ -1095,10 +1045,10 @@ mod tests {
 		($name:ident, $curve:ty, $cn:ident, $clen:expr) => {
 			#[test]
 			fn $name() {
-				use $cn::elliptic_curve::sec1::ToEncodedPoint;
-				let mut os_rng = OsRng;
-				let (_, pk) = <$curve>::generate(&mut os_rng.unwrap_mut());
-				let compressed = pk.pk.to_encoded_point(true);
+				use $cn::elliptic_curve::sec1::ToSec1Point;
+				let mut os_rng = SysRng;
+				let (_, pk) = <$curve>::generate(&mut UnwrapErr(&mut os_rng));
+				let compressed = pk.pk.to_sec1_point(true);
 				assert_eq!(compressed.as_bytes().len(), $clen);
 				assert!(matches!(
 					<$curve>::pk_from_bytes(compressed.as_bytes()),
@@ -1117,16 +1067,16 @@ mod tests {
 	/// is shared across all four NIST/secp256k1 curves via the macro.
 	#[test]
 	fn p256_pk_from_bytes_rejects_wrong_length_and_tag() {
-		use p256::elliptic_curve::sec1::ToEncodedPoint;
+		use p256::elliptic_curve::sec1::ToSec1Point;
 		for bad in [&[][..], &[0u8], &[0u8; 64], &[0u8; 66]] {
 			assert!(matches!(
 				P256::pk_from_bytes(bad),
 				Err(HpkeError::InvalidPublicKey)
 			));
 		}
-		let mut os_rng = OsRng;
-		let (_, pk) = P256::generate(&mut os_rng.unwrap_mut());
-		let mut tampered = pk.pk.to_encoded_point(false).as_bytes().to_vec();
+		let mut os_rng = SysRng;
+		let (_, pk) = P256::generate(&mut UnwrapErr(&mut os_rng));
+		let mut tampered = pk.pk.to_sec1_point(false).as_bytes().to_vec();
 		// Hybrid (0x06/0x07) has the right length but is not `Tag::Uncompressed`.
 		for tag in [0x06, 0x07] {
 			tampered[0] = tag;
@@ -1140,12 +1090,12 @@ mod tests {
 	/// `sk_to_bytes` ∘ `sk_from_bytes` roundtrips on every curve: a serialized
 	/// sk re-loaded must produce the same shared secret on encap/decap.
 	macro_rules! sk_roundtrip_test {
-		($name:ident, $curve:ty, $kdf:ty) => {
+		($name:ident, $curve:ty) => {
 			#[test]
 			fn $name() {
-				type Suite = DhKem<$curve, $kdf>;
-				let mut os_rng = OsRng;
-				let mut rng = os_rng.unwrap_mut();
+				type Suite = DhKem<$curve>;
+				let mut os_rng = SysRng;
+				let mut rng = UnwrapErr(&mut os_rng);
 				let (sk_r, pk_r) = Suite::generate(&mut rng).unwrap();
 				let sk_bytes = Suite::sk_to_bytes(&sk_r);
 				assert_eq!(sk_bytes.len(), Suite::PRIVATE_KEY_LEN);
@@ -1156,12 +1106,12 @@ mod tests {
 			}
 		};
 	}
-	sk_roundtrip_test!(x25519_sk_to_bytes_roundtrip, X25519, crate::HkdfSha256);
-	sk_roundtrip_test!(p256_sk_to_bytes_roundtrip, P256, crate::HkdfSha256);
-	sk_roundtrip_test!(p384_sk_to_bytes_roundtrip, P384, crate::HkdfSha384);
-	sk_roundtrip_test!(p521_sk_to_bytes_roundtrip, P521, crate::HkdfSha512);
-	sk_roundtrip_test!(k256_sk_to_bytes_roundtrip, K256, crate::HkdfSha256);
-	sk_roundtrip_test!(x448_sk_to_bytes_roundtrip, X448, crate::HkdfSha512);
+	sk_roundtrip_test!(x25519_sk_to_bytes_roundtrip, X25519);
+	sk_roundtrip_test!(p256_sk_to_bytes_roundtrip, P256);
+	sk_roundtrip_test!(p384_sk_to_bytes_roundtrip, P384);
+	sk_roundtrip_test!(p521_sk_to_bytes_roundtrip, P521);
+	sk_roundtrip_test!(k256_sk_to_bytes_roundtrip, K256);
+	sk_roundtrip_test!(x448_sk_to_bytes_roundtrip, X448);
 
 	/// RFC 7748 §5: `generate` and `derive` MUST store the X25519 scalar in
 	/// clamped final form so that `sk_to_bytes` is canonical. Without this,
@@ -1175,9 +1125,9 @@ mod tests {
 			assert_eq!(bytes[31] & 0x40, 0x40, "bit 6 of byte 31 must be set");
 		}
 
-		type Suite = DhKem<X25519, crate::HkdfSha256>;
-		let mut os_rng = OsRng;
-		let mut rng = os_rng.unwrap_mut();
+		type Suite = DhKem<X25519>;
+		let mut os_rng = SysRng;
+		let mut rng = UnwrapErr(&mut os_rng);
 
 		// `generate` produces clamped storage.
 		let (sk_gen, _) = Suite::generate(&mut rng).unwrap();

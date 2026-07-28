@@ -7,7 +7,8 @@
 #![allow(non_snake_case)]
 
 use hpke_ng::*;
-use rand_core::{OsRng, TryRngCore as _};
+use rand::rngs::SysRng as OsRng;
+use rand_core::UnwrapErr;
 
 macro_rules! roundtrip_base_sealing {
 	($name:ident, $kem:ty, $kdf:ty, $aead:ty) => {
@@ -15,7 +16,7 @@ macro_rules! roundtrip_base_sealing {
 		fn $name() {
 			type Suite = Hpke<$kem, $kdf, $aead>;
 			let mut os_rng = OsRng;
-			let mut rng = os_rng.unwrap_mut();
+			let mut rng = UnwrapErr(&mut os_rng);
 			let (sk_r, pk_r) = <$kem as Kem>::generate(&mut rng).unwrap();
 
 			let (enc, ct) = Suite::seal_base(&mut rng, &pk_r, b"info", b"aad", b"hello").unwrap();
@@ -47,19 +48,20 @@ macro_rules! roundtrip_psk_sealing {
 		fn $name() {
 			type Suite = Hpke<$kem, $kdf, $aead>;
 			let mut os_rng = OsRng;
-			let mut rng = os_rng.unwrap_mut();
+			let mut rng = UnwrapErr(&mut os_rng);
 			let (sk_r, pk_r) = <$kem as Kem>::generate(&mut rng).unwrap();
-			let psk = [0xCDu8; 32];
-			let (enc, ct) =
-				Suite::seal_psk(&mut rng, &pk_r, b"i", b"a", b"hi", &psk, b"id").unwrap();
+			let psk_bytes = [0xCDu8; 32];
+			let psk = Psk::new(&psk_bytes, b"id").unwrap();
+			let (enc, ct) = Suite::seal_psk(&mut rng, &pk_r, b"i", b"a", b"hi", psk).unwrap();
 			assert_eq!(
-				Suite::open_psk(&enc, &sk_r, b"i", b"a", &ct, &psk, b"id").unwrap(),
+				Suite::open_psk(&enc, &sk_r, b"i", b"a", &ct, psk).unwrap(),
 				b"hi",
 			);
 
-			let too_short = [0u8; 16];
+			// A too-short PSK is rejected when the `Psk` is built, so it can
+			// never reach a ciphersuite operation.
 			assert_eq!(
-				Suite::seal_psk(&mut rng, &pk_r, b"i", b"a", b"hi", &too_short, b"id").unwrap_err(),
+				Psk::new(&[0u8; 16], b"id").unwrap_err(),
 				HpkeError::InsecurePsk,
 			);
 		}
@@ -72,7 +74,7 @@ macro_rules! roundtrip_auth_sealing {
 		fn $name() {
 			type Suite = Hpke<$kem, $kdf, $aead>;
 			let mut os_rng = OsRng;
-			let mut rng = os_rng.unwrap_mut();
+			let mut rng = UnwrapErr(&mut os_rng);
 			let (sk_r, pk_r) = <$kem as Kem>::generate(&mut rng).unwrap();
 			let (sk_s, pk_s) = <$kem as Kem>::generate(&mut rng).unwrap();
 			let (enc, ct) = Suite::seal_auth(&mut rng, &pk_r, b"i", b"a", b"hi", &sk_s).unwrap();
@@ -90,15 +92,15 @@ macro_rules! roundtrip_auth_psk_sealing {
 		fn $name() {
 			type Suite = Hpke<$kem, $kdf, $aead>;
 			let mut os_rng = OsRng;
-			let mut rng = os_rng.unwrap_mut();
+			let mut rng = UnwrapErr(&mut os_rng);
 			let (sk_r, pk_r) = <$kem as Kem>::generate(&mut rng).unwrap();
 			let (sk_s, pk_s) = <$kem as Kem>::generate(&mut rng).unwrap();
-			let psk = [0xEFu8; 32];
+			let psk_bytes = [0xEFu8; 32];
+			let psk = Psk::new(&psk_bytes, b"id").unwrap();
 			let (enc, ct) =
-				Suite::seal_auth_psk(&mut rng, &pk_r, b"i", b"a", b"hi", &psk, b"id", &sk_s)
-					.unwrap();
+				Suite::seal_auth_psk(&mut rng, &pk_r, b"i", b"a", b"hi", psk, &sk_s).unwrap();
 			assert_eq!(
-				Suite::open_auth_psk(&enc, &sk_r, b"i", b"a", &ct, &psk, b"id", &pk_s).unwrap(),
+				Suite::open_auth_psk(&enc, &sk_r, b"i", b"a", &ct, psk, &pk_s).unwrap(),
 				b"hi",
 			);
 		}
@@ -208,29 +210,16 @@ mod pq {
 	);
 }
 
-// PSK error-path coverage on a single suite (representative).
+// PSK input validation lives in `Psk::new`, so it is structurally unreachable
+// from the mode entry points — they cannot be called without a validated `Psk`.
+// The full matrix is in `src/psk.rs`; this keeps a public-API-level check that
+// the constructor really is the gate.
 #[test]
-fn psk_inconsistent_rejected() {
-	type Suite = Hpke<DhKemX25519HkdfSha256, HkdfSha256, ChaCha20Poly1305>;
-	let mut os_rng = OsRng;
-	let mut rng = os_rng.unwrap_mut();
-	let (_sk_r, pk_r) = DhKemX25519HkdfSha256::generate(&mut rng).unwrap();
-	assert_eq!(
-		Suite::seal_psk(&mut rng, &pk_r, b"i", b"a", b"x", &[0u8; 32], b"").unwrap_err(),
-		HpkeError::InconsistentPsk,
-	);
-}
-
-#[test]
-fn psk_missing_in_psk_mode_rejected() {
-	type Suite = Hpke<DhKemX25519HkdfSha256, HkdfSha256, ChaCha20Poly1305>;
-	let mut os_rng = OsRng;
-	let mut rng = os_rng.unwrap_mut();
-	let (_, pk_r) = DhKemX25519HkdfSha256::generate(&mut rng).unwrap();
-	assert_eq!(
-		Suite::seal_psk(&mut rng, &pk_r, b"i", b"a", b"x", b"", b"").unwrap_err(),
-		HpkeError::MissingPsk,
-	);
+fn psk_validation_happens_at_construction() {
+	assert_eq!(Psk::new(&[0u8; 32], b""), Err(HpkeError::InconsistentPsk));
+	assert_eq!(Psk::new(b"", b"id"), Err(HpkeError::InconsistentPsk));
+	assert_eq!(Psk::new(b"", b""), Err(HpkeError::MissingPsk));
+	assert_eq!(Psk::new(b"too short", b"id"), Err(HpkeError::InsecurePsk));
 }
 
 // ---------------------------------------------------------------------------
@@ -446,7 +435,7 @@ macro_rules! roundtrip_export_only_base {
 		fn $name() {
 			type Suite = Hpke<$kem, $kdf, ExportOnly>;
 			let mut os_rng = OsRng;
-			let mut rng = os_rng.unwrap_mut();
+			let mut rng = UnwrapErr(&mut os_rng);
 			let (sk_r, pk_r) = <$kem as Kem>::generate(&mut rng).unwrap();
 			for &len in &[16usize, 32, 64] {
 				let (enc, sender) =
@@ -466,13 +455,14 @@ macro_rules! roundtrip_export_only_psk {
 		fn $name() {
 			type Suite = Hpke<$kem, $kdf, ExportOnly>;
 			let mut os_rng = OsRng;
-			let mut rng = os_rng.unwrap_mut();
+			let mut rng = UnwrapErr(&mut os_rng);
 			let (sk_r, pk_r) = <$kem as Kem>::generate(&mut rng).unwrap();
-			let psk = [0xA5u8; 32];
+			let psk_bytes = [0xA5u8; 32];
+			let psk = Psk::new(&psk_bytes, b"id").unwrap();
 			let (enc, sender) =
-				Suite::send_export_psk(&mut rng, &pk_r, b"info", &psk, b"id", b"ctx", 32).unwrap();
+				Suite::send_export_psk(&mut rng, &pk_r, b"info", psk, b"ctx", 32).unwrap();
 			let receiver =
-				Suite::receiver_export_psk(&enc, &sk_r, b"info", &psk, b"id", b"ctx", 32).unwrap();
+				Suite::receiver_export_psk(&enc, &sk_r, b"info", psk, b"ctx", 32).unwrap();
 			assert_eq!(sender, receiver);
 		}
 	};
@@ -484,7 +474,7 @@ macro_rules! roundtrip_export_only_auth {
 		fn $name() {
 			type Suite = Hpke<$kem, $kdf, ExportOnly>;
 			let mut os_rng = OsRng;
-			let mut rng = os_rng.unwrap_mut();
+			let mut rng = UnwrapErr(&mut os_rng);
 			let (sk_r, pk_r) = <$kem as Kem>::generate(&mut rng).unwrap();
 			let (sk_s, pk_s) = <$kem as Kem>::generate(&mut rng).unwrap();
 			let (enc, sender) =
@@ -502,18 +492,17 @@ macro_rules! roundtrip_export_only_auth_psk {
 		fn $name() {
 			type Suite = Hpke<$kem, $kdf, ExportOnly>;
 			let mut os_rng = OsRng;
-			let mut rng = os_rng.unwrap_mut();
+			let mut rng = UnwrapErr(&mut os_rng);
 			let (sk_r, pk_r) = <$kem as Kem>::generate(&mut rng).unwrap();
 			let (sk_s, pk_s) = <$kem as Kem>::generate(&mut rng).unwrap();
-			let psk = [0xB7u8; 32];
-			let (enc, sender) = Suite::send_export_auth_psk(
-				&mut rng, &pk_r, b"info", &psk, b"id", &sk_s, b"ctx", 48,
-			)
-			.unwrap();
-			let receiver = Suite::receiver_export_auth_psk(
-				&enc, &sk_r, b"info", &psk, b"id", &pk_s, b"ctx", 48,
-			)
-			.unwrap();
+			let psk_bytes = [0xB7u8; 32];
+			let psk = Psk::new(&psk_bytes, b"id").unwrap();
+			let (enc, sender) =
+				Suite::send_export_auth_psk(&mut rng, &pk_r, b"info", psk, &sk_s, b"ctx", 48)
+					.unwrap();
+			let receiver =
+				Suite::receiver_export_auth_psk(&enc, &sk_r, b"info", psk, &pk_s, b"ctx", 48)
+					.unwrap();
 			assert_eq!(sender, receiver);
 		}
 	};
