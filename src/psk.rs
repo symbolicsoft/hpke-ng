@@ -2,6 +2,8 @@
 
 use core::fmt;
 
+use subtle::ConstantTimeEq;
+
 use crate::HpkeError;
 
 /// Minimum accepted PSK length in bytes.
@@ -32,11 +34,20 @@ pub const MIN_PSK_LEN: usize = 32;
 /// assert_eq!(Psk::new(b"hunter2", b"my-psk-id"), Err(HpkeError::InsecurePsk));
 /// # Ok::<_, HpkeError>(())
 /// ```
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 pub struct Psk<'a> {
 	secret: &'a [u8],
 	id: &'a [u8],
 }
+
+/// Constant-time in the secret; the identifier is public and compared normally.
+impl PartialEq for Psk<'_> {
+	fn eq(&self, other: &Self) -> bool {
+		self.id == other.id && bool::from(self.secret.ct_eq(other.secret))
+	}
+}
+
+impl Eq for Psk<'_> {}
 
 impl<'a> Psk<'a> {
 	/// Bundle a PSK with its identifier.
@@ -119,6 +130,16 @@ mod tests {
 		let psk = Psk::new(&secret, b"the-id").unwrap();
 		assert_eq!(psk.secret(), &secret);
 		assert_eq!(psk.id(), b"the-id");
+	}
+
+	#[test]
+	fn equality_compares_both_fields() {
+		let a = [0x11u8; MIN_PSK_LEN];
+		let mut b = a;
+		b[MIN_PSK_LEN - 1] ^= 1;
+		assert_eq!(Psk::new(&a, b"id").unwrap(), Psk::new(&a, b"id").unwrap());
+		assert_ne!(Psk::new(&a, b"id").unwrap(), Psk::new(&b, b"id").unwrap());
+		assert_ne!(Psk::new(&a, b"id").unwrap(), Psk::new(&a, b"id-x").unwrap());
 	}
 
 	#[test]

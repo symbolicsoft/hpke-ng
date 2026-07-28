@@ -31,6 +31,7 @@ dependencies = [
  "cfg-if",
  "cipher 0.4.4",
  "cpufeatures 0.2.17",
+ "zeroize",
 ]
 
 [[package]]
@@ -789,6 +790,7 @@ checksum = "f0d8a4362ccb29cb0b265253fb0a2728f592895ee6854fd9bc13f2ffda266ff1"
 dependencies = [
  "opaque-debug",
  "polyval 0.6.2",
+ "zeroize",
 ]
 
 [[package]]
@@ -965,10 +967,12 @@ name = "hpke-ng"
 version = "0.2.0"
 dependencies = [
  "aead 0.5.2",
+ "aes 0.8.4",
  "aes-gcm 0.10.3",
  "chacha20poly1305 0.10.1",
  "criterion",
  "ed448-goldilocks",
+ "ghash 0.5.1",
  "hex",
  "hkdf 0.13.0",
  "hpke",
@@ -980,6 +984,7 @@ dependencies = [
  "p256 0.14.0",
  "p384 0.14.0",
  "p521",
+ "polyval 0.6.2",
  "rand",
  "rand_chacha",
  "rand_core 0.10.1",
@@ -1656,6 +1661,7 @@ dependencies = [
  "cpufeatures 0.2.17",
  "opaque-debug",
  "universal-hash 0.5.1",
+ "zeroize",
 ]
 
 [[package]]

@@ -118,4 +118,4 @@ jobs:
         with:
           tool: cargo-fuzz
       - name: cargo fuzz run ${{ matrix.target }}
-        run: cargo fuzz run ${{ matrix.target }} -- -max_total_time=60 -rss_limit_mb=4096
+        run: cargo fuzz run --target "$(rustc -vV | sed -n 's/^host: //p')" ${{ matrix.target }} -- -max_total_time=60 -rss_limit_mb=4096

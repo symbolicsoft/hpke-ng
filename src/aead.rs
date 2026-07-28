@@ -288,6 +288,15 @@ mod tests {
 		assert_eq!(r.err(), Some(HpkeError::AeadInitError));
 	}
 
+	/// Guards the `aes/zeroize` entry in `Cargo.toml`: `aes_gcm::AesGcm` has no
+	/// `Drop`, so without it the cached round keys survive in freed memory.
+	#[test]
+	fn aes_round_keys_are_scrubbed_on_drop() {
+		fn assert_zeroize_on_drop<T: zeroize::ZeroizeOnDrop>() {}
+		assert_zeroize_on_drop::<aes::Aes128>();
+		assert_zeroize_on_drop::<aes::Aes256>();
+	}
+
 	#[test]
 	fn export_only_implements_aead_only() {
 		fn assert_aead<A: Aead>() {}
