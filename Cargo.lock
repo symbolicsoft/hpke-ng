@@ -986,6 +986,7 @@ dependencies = [
  "p256 0.14.0",
  "p384 0.14.0",
  "p521",
+ "poly1305 0.9.1",
  "polyval 0.7.3",
  "rand",
  "rand_chacha",
@@ -1651,6 +1652,7 @@ checksum = "6e2d0073b297041425c7c3df6eb4792d598a15323fe63346852b092eca02904c"
 dependencies = [
  "cpufeatures 0.3.0",
  "universal-hash 0.6.1",
+ "zeroize",
 ]
 
 [[package]]

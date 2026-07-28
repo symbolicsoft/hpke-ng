@@ -12,7 +12,7 @@ categories   = ["cryptography", "no-std"]
 exclude      = ["tests/test_vectors.json", "tests/test_vectors_k256.json"]
 
 [dependencies]
-zeroize          = { version = "1.8",  default-features = false, features = ["derive", "alloc"] }
+zeroize          = { version = "1.9",  default-features = false, features = ["derive", "alloc"] }
 subtle           = { version = "2.6",  default-features = false }
 rand_core        = { version = "0.10", default-features = false }
 hkdf             = { version = "0.13", default-features = false }
@@ -24,6 +24,7 @@ chacha20poly1305 = { version = "0.11", default-features = false, features = ["al
 aes              = { version = "0.9",  default-features = false, features = ["zeroize"] }
 ghash            = { version = "0.6",  default-features = false, features = ["zeroize"] }
 polyval          = { version = "0.7",  default-features = false, features = ["zeroize"] }
+poly1305         = { version = "0.9",  default-features = false, features = ["zeroize"] }
 x25519-dalek     = { version = "3",    default-features = false, features = ["zeroize", "static_secrets"] }
 ed448-goldilocks = { version = "0.14.0-pre.12", default-features = false }
 p256             = { version = "0.14", default-features = false, features = ["arithmetic", "ecdh"] }

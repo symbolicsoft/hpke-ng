@@ -87,9 +87,9 @@ impl SealingAead for ChaCha20Poly1305 {
 			Nonce,
 			aead::{Aead as _, Payload},
 		};
-		let nonce = Nonce::try_from(nonce).map_err(|_| HpkeError::SealError)?;
+		let nonce = <&Nonce>::try_from(nonce).map_err(|_| HpkeError::SealError)?;
 		cipher
-			.encrypt(&nonce, Payload { msg: pt, aad })
+			.encrypt(nonce, Payload { msg: pt, aad })
 			.map_err(|_| HpkeError::SealError)
 	}
 	fn open(
@@ -102,9 +102,9 @@ impl SealingAead for ChaCha20Poly1305 {
 			Nonce,
 			aead::{Aead as _, Payload},
 		};
-		let nonce = Nonce::try_from(nonce).map_err(|_| HpkeError::OpenError)?;
+		let nonce = <&Nonce>::try_from(nonce).map_err(|_| HpkeError::OpenError)?;
 		cipher
-			.decrypt(&nonce, Payload { msg: ct, aad })
+			.decrypt(nonce, Payload { msg: ct, aad })
 			.map_err(|_| HpkeError::OpenError)
 	}
 }
@@ -138,9 +138,9 @@ impl SealingAead for Aes128Gcm {
 		pt: &[u8],
 	) -> Result<Vec<u8>, HpkeError> {
 		use aes_gcm::aead::Aead as _;
-		let nonce = aes_gcm::Nonce::try_from(nonce).map_err(|_| HpkeError::SealError)?;
+		let nonce = <&aes_gcm::Nonce<_>>::try_from(nonce).map_err(|_| HpkeError::SealError)?;
 		cipher
-			.encrypt(&nonce, aead::Payload { msg: pt, aad })
+			.encrypt(nonce, aead::Payload { msg: pt, aad })
 			.map_err(|_| HpkeError::SealError)
 	}
 	fn open(
@@ -150,9 +150,9 @@ impl SealingAead for Aes128Gcm {
 		ct: &[u8],
 	) -> Result<Vec<u8>, HpkeError> {
 		use aes_gcm::aead::Aead as _;
-		let nonce = aes_gcm::Nonce::try_from(nonce).map_err(|_| HpkeError::OpenError)?;
+		let nonce = <&aes_gcm::Nonce<_>>::try_from(nonce).map_err(|_| HpkeError::OpenError)?;
 		cipher
-			.decrypt(&nonce, aead::Payload { msg: ct, aad })
+			.decrypt(nonce, aead::Payload { msg: ct, aad })
 			.map_err(|_| HpkeError::OpenError)
 	}
 }
@@ -185,9 +185,9 @@ impl SealingAead for Aes256Gcm {
 		pt: &[u8],
 	) -> Result<Vec<u8>, HpkeError> {
 		use aes_gcm::aead::Aead as _;
-		let nonce = aes_gcm::Nonce::try_from(nonce).map_err(|_| HpkeError::SealError)?;
+		let nonce = <&aes_gcm::Nonce<_>>::try_from(nonce).map_err(|_| HpkeError::SealError)?;
 		cipher
-			.encrypt(&nonce, aead::Payload { msg: pt, aad })
+			.encrypt(nonce, aead::Payload { msg: pt, aad })
 			.map_err(|_| HpkeError::SealError)
 	}
 	fn open(
@@ -197,9 +197,9 @@ impl SealingAead for Aes256Gcm {
 		ct: &[u8],
 	) -> Result<Vec<u8>, HpkeError> {
 		use aes_gcm::aead::Aead as _;
-		let nonce = aes_gcm::Nonce::try_from(nonce).map_err(|_| HpkeError::OpenError)?;
+		let nonce = <&aes_gcm::Nonce<_>>::try_from(nonce).map_err(|_| HpkeError::OpenError)?;
 		cipher
-			.decrypt(&nonce, aead::Payload { msg: ct, aad })
+			.decrypt(nonce, aead::Payload { msg: ct, aad })
 			.map_err(|_| HpkeError::OpenError)
 	}
 }

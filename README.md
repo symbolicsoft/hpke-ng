@@ -43,7 +43,7 @@ The design takes one position on each: **no provider abstraction, no owned RNG, 
 - **Type-tagged keys.** Private keys carry their KEM in their type, so passing a `DhKemP256` key into an X25519 suite is rejected by the compiler, not at runtime.
 - **Caller-provided RNG.** No PRNG owned by the configuration; cloning cannot alias randomness.
 - **Structural nonce-reuse prevention.** `Context` is non-cloneable and refuses to encrypt at `seq == u64::MAX`.
-- **`no_std` + `alloc`.** `HpkeError` implements `core::error::Error` regardless; the default `std` feature only forwards `std` to the AEAD and `subtle` dependencies.
+- **`no_std` + `alloc`.** `HpkeError` implements `core::error::Error` regardless; the default `std` feature only forwards `std` to the `subtle` dependency.
 - **One provider stack.** All primitives from RustCrypto-org crates.
 
 ## Compile-time guarantees
