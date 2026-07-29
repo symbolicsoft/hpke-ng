@@ -119,6 +119,13 @@ impl<K: Kem, F: Kdf, A: Aead> Context<K, F, A> {
 		}
 		nonce
 	}
+
+	/// The number of messages already processed by this context — equivalently,
+	/// the sequence number the *next* `seal`/`open` will use. Not secret.
+	#[must_use]
+	pub fn sequence_number(&self) -> u64 {
+		self.seq
+	}
 }
 
 /// Accessors for the KAT and differential harnesses, which assert on
@@ -143,11 +150,6 @@ impl<K: Kem, F: Kdf, A: Aead> Context<K, F, A> {
 	#[must_use]
 	pub fn exporter_secret(&self) -> &[u8] {
 		&self.exporter_secret
-	}
-	/// The current sequence number.
-	#[must_use]
-	pub fn sequence_number(&self) -> u64 {
-		self.seq
 	}
 	/// Sets the sequence number, for the `u64::MAX` boundary tests.
 	#[cfg(test)]
@@ -236,6 +238,22 @@ impl<K: Kem, F: Kdf, A: Aead> SenderContext<K, F, A> {
 	pub fn export(&self, exporter_context: &[u8], length: usize) -> Result<Vec<u8>, HpkeError> {
 		self.0.export(exporter_context, length)
 	}
+
+	/// How many messages this context has already sealed.
+	///
+	/// This crate enforces only the hard structural bound — `seal` refuses at
+	/// `seq == u64::MAX` (see [`HpkeError::MessageLimitReached`]) — because that
+	/// is the point at which the nonce would repeat. RFC 9180 §7.3.1 recommends
+	/// *far* lower per-key limits than `2^64` for the AES-GCM suites, but the
+	/// safe figure depends on the confidentiality/integrity advantage a
+	/// deployment is willing to accept, so it is not something this crate can
+	/// pick on the caller's behalf. Applications that need to rekey before that
+	/// bound should poll this counter and start a fresh HPKE setup when it
+	/// crosses their chosen threshold.
+	#[must_use]
+	pub fn sequence_number(&self) -> u64 {
+		self.0.sequence_number()
+	}
 }
 
 impl<K: Kem, F: Kdf, A: SealingAead> SenderContext<K, F, A> {
@@ -253,6 +271,14 @@ impl<K: Kem, F: Kdf, A: Aead> ReceiverContext<K, F, A> {
 	/// `Context.Export` (RFC 9180 §5.3).
 	pub fn export(&self, exporter_context: &[u8], length: usize) -> Result<Vec<u8>, HpkeError> {
 		self.0.export(exporter_context, length)
+	}
+
+	/// How many messages this context has already opened successfully. A failed
+	/// `open` does not advance it. See
+	/// [`SenderContext::sequence_number`] for the rekeying note.
+	#[must_use]
+	pub fn sequence_number(&self) -> u64 {
+		self.0.sequence_number()
 	}
 }
 
@@ -284,11 +310,6 @@ impl<K: Kem, F: Kdf, A: Aead> ReceiverContext<K, F, A> {
 	#[must_use]
 	pub fn exporter_secret(&self) -> &[u8] {
 		self.0.exporter_secret()
-	}
-	/// The current sequence number.
-	#[must_use]
-	pub fn sequence_number(&self) -> u64 {
-		self.0.sequence_number()
 	}
 }
 

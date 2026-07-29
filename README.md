@@ -143,6 +143,20 @@ The library responds to two classes of issue observed in prior implementations:
 
 The post-DH all-zeros check is constant-time. `Context` cannot be `Clone`d, so two ciphertexts cannot be produced under the same `(key, nonce)` from two copies of the same context.
 
+### Hazmat features
+
+`hazmat-kat-internals` and `hazmat-differential` exist for this crate's own known-answer and differential harnesses. They make raw AEAD keys and exporter secrets readable off a `Context`, make `key_schedule_*` callable with a caller-supplied shared secret, and make `SenderContext::from_context` public — which together are enough to fork two sender contexts from one key schedule and seal twice under the same `(key, base_nonce, seq)`. That is exactly the nonce reuse `Context: !Clone` exists to prevent.
+
+Cargo unifies features across the whole dependency graph, so one unrelated crate enabling either feature would otherwise switch that exposure on for the entire build, silently. Neither `--cfg` flags nor environment variables are unified that way, and a dependency's build script cannot set either for *this* crate's compilation, so both features are additionally gated on `RUSTFLAGS="--cfg hpke_ng_hazmat"` (or `HPKE_NG_HAZMAT=1`, for tools such as `trybuild` that control `RUSTFLAGS` themselves). Without one of those the build fails with an explanatory error. A dependency cannot supply either on your behalf.
+
+### AEAD usage limits
+
+`seal` refuses at `seq == u64::MAX` — the point at which the nonce would repeat — and that is the only per-key limit this crate enforces. RFC 9180 §7.3.1 recommends rekeying well before `2^64` messages for the AES-GCM suites, but the safe figure depends on the confidentiality and integrity advantage a given deployment will accept, so it is not a number this crate can pick for you. `SenderContext::sequence_number` and `ReceiverContext::sequence_number` expose the counter so an application can set and enforce its own threshold, tearing down the context and running a fresh HPKE setup when it is crossed.
+
+### Deterministic key derivation
+
+`Kem::derive_key_pair` is deterministic and performs no entropy check on its `ikm`: `derive_key_pair(b"")` succeeds and returns a key pair anyone can reproduce. Entropy is not observable, and unlike `Psk::new` — where a length floor is a workable proxy — a floor here would reject the RFC's own conformant KAT inputs while still admitting a long low-entropy string. Use `Kem::generate` unless you specifically need deterministic derivation, and never derive from a password without a slow password-hashing KDF (e.g. Argon2) in front.
+
 ## Constant-time considerations
 
 This crate composes RustCrypto primitives. Constant-time properties are inherited from those crates:
@@ -160,13 +174,22 @@ This crate composes RustCrypto primitives. Constant-time properties are inherite
 
 Everything this crate controls is scrubbed: private keys, shared secrets, PRKs, candidate scalars, seeds, and the derived AEAD key and base nonce are held in `Zeroizing`/`ZeroizeOnDrop` wrappers, with explicit manual scrubbing wherever an upstream type lacks zeroize-on-drop (the X448 scalar and shared-secret point, `GenericArray` temporaries from `SecretKey::to_bytes` and `HkdfExtract::finalize`, and the ML-KEM/X-Wing shared-secret arrays).
 
+**Known limitation — transient stack copies.** A handful of upstream constructors take secret material *by value* (`x25519_dalek::StaticSecret::from([u8; 32])`, `x_wing::DecapsulationKey::from(seed)`, `ml_kem::DecapsulationKey::from_seed`), so the seed or scalar is copied out of its `Zeroizing` wrapper into an unscrubbed temporary for the duration of the call. The owned copies on both sides of that boundary are scrubbed; the temporary is not, and cannot be without a by-reference upstream API.
+
 **Known limitation — HKDF/HMAC internal state.** The RustCrypto `hkdf`/`hmac` crates do not zeroize their internal HMAC state on drop. Every HKDF extract/expand operation therefore leaves PRK-derived ipad/opad block state transiently in freed memory. This is key-equivalent material: an attacker who can read process memory (core dumps, swap, a same-process memory-disclosure bug) could recover it while the allocation remains unreused. The limitation is shared by every RustCrypto-based HPKE implementation and cannot be fixed from this crate. Deployments with a strong memory-forensics threat model should disable core dumps and swap (or use encrypted swap) for processes holding HPKE keys.
 
 ## Testing
 
 ```bash
-cargo test                                                        # library, roundtrip, negative matrix
-cargo test --features pq                                          # + post-quantum, X-Wing KAT, rust-hpke differential
+cargo test              # library, roundtrip, negative matrix
+cargo test --features pq # + post-quantum, X-Wing KAT, rust-hpke differential
+
+# The suites below need the `hazmat-` features, which are refused at compile
+# time without the second opt-in below. See "Hazmat features" under Security
+# posture for why.
+# `trybuild` strips RUSTFLAGS from the sub-build it drives, so the compile-fail
+# suite needs the env-var form of the same opt-in.
+export RUSTFLAGS="--cfg hpke_ng_hazmat" HPKE_NG_HAZMAT=1
 cargo test --features pq,hazmat-kat-internals                     # + RFC 9180 KAT
 cargo test --features pq,hazmat-kat-internals --test compile_fail # + compile-time invariant tests
 cargo test --features pq,hazmat-differential,hazmat-kat-internals # + differential vs hpke-rs
@@ -174,7 +197,8 @@ cargo test --features pq,hazmat-differential,hazmat-kat-internals # + differenti
 
 To regenerate the compile-fail `.stderr` fixtures after an intentional change (e.g. a toolchain bump), run:
 ```bash
-TRYBUILD=overwrite cargo test --features pq,hazmat-kat-internals --test compile_fail
+HPKE_NG_HAZMAT=1 TRYBUILD=overwrite \
+  cargo test --features pq,hazmat-kat-internals --test compile_fail
 ```
 This rewrites the fixtures unconditionally and should not be used as the normal test invocation.
 

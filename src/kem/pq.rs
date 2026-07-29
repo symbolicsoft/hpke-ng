@@ -25,6 +25,31 @@ use crate::sealed::Sealed;
 /// `DeriveKeyPair` label — draft-ietf-hpke-pq §3.2 (ML-KEM) and §4.2 (hybrids).
 const DERIVE_KEY_PAIR_LABEL: &[u8] = b"DeriveKeyPair";
 
+/// `XWingPrivateKey::seed` is a fixed `[u8; 32]` that `sk_from_bytes` fills with
+/// `copy_from_slice` after length-checking against `x_wing::DECAPSULATION_KEY_SIZE`.
+/// Those two are only equal by inspection of the current upstream release, and
+/// `x-wing` is pre-1.0, so a semver-compatible bump could change the constant and
+/// turn that check into a panic on well-formed input. Pin the relationship here so
+/// the mismatch is a build failure instead.
+const _: () = assert!(
+	x_wing::DECAPSULATION_KEY_SIZE == 32,
+	"XWingPrivateKey::seed is [u8; 32]; upstream decapsulation-key size changed"
+);
+
+/// Copy a KEM shared secret into this crate's fixed 32-byte wrapper.
+///
+/// `copy_from_slice` would panic if an upstream release ever changed its
+/// shared-secret width. Nothing downstream of a KEM should be able to turn a
+/// dependency bump into a panic inside `decap`, so the length is checked.
+fn shared_secret_bytes(ss: &[u8]) -> Result<[u8; 32], HpkeError> {
+	let mut out = [0u8; 32];
+	if ss.len() != out.len() {
+		return Err(HpkeError::DecapError);
+	}
+	out.copy_from_slice(ss);
+	Ok(out)
+}
+
 /// `SHAKE256.LabeledDerive(ikm, label, context, L)` — the one-stage-KDF labeled
 /// derivation of draft-ietf-hpke-hpke §4:
 ///
@@ -207,12 +232,12 @@ impl Kem for XWingDraft06 {
 		// Use the cached parsed `EncapsulationKey` directly — no per-call
 		// `try_from` over the 1216-byte wire form.
 		let (ct, mut ss) = pk_r.parsed.encapsulate_with_rng(rng);
-		let mut ss_bytes = [0u8; 32];
-		ss_bytes.copy_from_slice(ss.as_ref());
+		let ss_bytes = shared_secret_bytes(ss.as_ref());
 		// Scrub the upstream shared-secret array; it is a plain `Array<u8, 32>`
 		// with no zeroize-on-drop. The wrapper owns the only surviving copy.
+		// Done before `?` so a length mismatch still scrubs.
 		ss.zeroize();
-		Ok((XWingSharedSecret(ss_bytes), XWingEncappedKey(ct.to_vec())))
+		Ok((XWingSharedSecret(ss_bytes?), XWingEncappedKey(ct.to_vec())))
 	}
 
 	fn decap(
@@ -230,11 +255,10 @@ impl Kem for XWingDraft06 {
 		let mut ss = dk
 			.decapsulate_slice(enc.0.as_slice())
 			.map_err(|_| HpkeError::InvalidEncappedKey)?;
-		let mut ss_bytes = [0u8; 32];
-		ss_bytes.copy_from_slice(ss.as_ref());
+		let ss_bytes = shared_secret_bytes(ss.as_ref());
 		// Scrub the upstream shared-secret array (see `encap`).
 		ss.zeroize();
-		Ok(XWingSharedSecret(ss_bytes))
+		Ok(XWingSharedSecret(ss_bytes?))
 	}
 
 	fn pk_from_bytes(b: &[u8]) -> Result<Self::PublicKey, HpkeError> {
@@ -444,12 +468,12 @@ macro_rules! ml_kem_variant {
 				// Cached parsed `EncapsulationKey` — no per-call `try_into`
 				// + `<$ek>::new` over the 1184/1568-byte wire form.
 				let (ct, mut ss) = pk_r.parsed.encapsulate_with_rng(rng);
-				let mut ss_bytes = [0u8; 32];
-				ss_bytes.copy_from_slice(ss.as_ref());
+				let ss_bytes = shared_secret_bytes(ss.as_ref());
 				// Scrub the upstream shared-secret array; `MlKemSharedSecret`
-				// owns the only surviving copy.
+				// owns the only surviving copy. Done before `?` so a length
+				// mismatch still scrubs.
 				ss.zeroize();
-				Ok((MlKemSharedSecret(ss_bytes), $enc_wrap(ct.to_vec())))
+				Ok((MlKemSharedSecret(ss_bytes?), $enc_wrap(ct.to_vec())))
 			}
 
 			fn decap(
@@ -468,11 +492,10 @@ macro_rules! ml_kem_variant {
 					.try_into()
 					.map_err(|_| HpkeError::InvalidEncappedKey)?;
 				let mut ss = dk.decapsulate(&ct);
-				let mut ss_bytes = [0u8; 32];
-				ss_bytes.copy_from_slice(ss.as_ref());
+				let ss_bytes = shared_secret_bytes(ss.as_ref());
 				// Scrub the upstream shared-secret array (see `encap`).
 				ss.zeroize();
-				Ok(MlKemSharedSecret(ss_bytes))
+				Ok(MlKemSharedSecret(ss_bytes?))
 			}
 
 			fn pk_from_bytes(b: &[u8]) -> Result<Self::PublicKey, HpkeError> {
