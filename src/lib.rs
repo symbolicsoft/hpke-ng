@@ -41,6 +41,45 @@
 	unused_extern_crates
 )]
 
+// The `hazmat-` features exist for this crate's own KAT / differential
+// harnesses. They make internal key-schedule state public: raw AEAD keys and
+// exporter secrets become readable, `key_schedule_*` becomes callable with a
+// caller-supplied shared secret, and `SenderContext::from_context` lets a
+// caller wrap the result. Together those are enough to fork two sender
+// contexts off one key schedule and seal twice under the same
+// `(key, base_nonce, seq)` — the exact nonce reuse that `Context: !Clone`
+// exists to prevent.
+//
+// Cargo features are unified across the entire dependency graph, so a single
+// unrelated crate enabling one of these would silently turn it on for
+// everybody. Neither a `--cfg` flag nor an environment variable is unified that
+// way, and a dependency's build script cannot set either for *this* crate's
+// compilation — so requiring one in addition to the feature means the exposure
+// takes a deliberate change to the top-level build.
+//
+// Two accepted forms, because `trybuild` deliberately strips `RUSTFLAGS` from
+// the sub-build it drives (see `trybuild::cargo`), and the compile-fail suite
+// has to build the hazmat surface too:
+//
+//   RUSTFLAGS="--cfg hpke_ng_hazmat"   — preferred; changes invalidate the
+//                                        build cache reliably.
+//   HPKE_NG_HAZMAT=1                   — for `trybuild` and anything else that
+//                                        controls `RUSTFLAGS` itself.
+#[cfg(all(
+	any(feature = "hazmat-kat-internals", feature = "hazmat-differential"),
+	not(hpke_ng_hazmat)
+))]
+const _HAZMAT_REQUIRES_EXPLICIT_OPT_IN: () = assert!(
+	option_env!("HPKE_NG_HAZMAT").is_some(),
+	"the `hazmat-kat-internals` and `hazmat-differential` features expose internal \
+	 key-schedule state (raw AEAD keys, exporter secrets, and construction of a \
+	 `SenderContext` from arbitrary key material) and must never be enabled in a \
+	 production build. Because Cargo unifies features across the dependency graph, \
+	 enabling them requires a second opt-in that a dependency cannot supply on your \
+	 behalf: build with RUSTFLAGS=\"--cfg hpke_ng_hazmat\", or set HPKE_NG_HAZMAT=1 \
+	 where RUSTFLAGS is not yours to set."
+);
+
 extern crate alloc;
 
 mod aead;

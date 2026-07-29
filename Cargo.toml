@@ -26,7 +26,16 @@ ghash            = { version = "0.6",  default-features = false, features = ["ze
 polyval          = { version = "0.7",  default-features = false, features = ["zeroize"] }
 poly1305         = { version = "0.9",  default-features = false, features = ["zeroize"] }
 x25519-dalek     = { version = "3",    default-features = false, features = ["zeroize", "static_secrets"] }
-ed448-goldilocks = { version = "0.14.0-pre.12", default-features = false }
+# Pinned exactly, not caret-matched. `^0.14.0-pre.N` floats across pre-releases
+# and up to `0.14.0` final: the previously declared `0.14.0-pre.12` no longer
+# even compiles against `elliptic-curve` 0.14.1, and only the locked `pre.15`
+# was ever tested. Cargo.lock pins this repo's own CI but not downstream
+# consumers of the library, who resolve fresh — so the requirement has to carry
+# the pin. X448 is also the one group here built on hand-rolled scalar handling
+# over this crate's `MontgomeryPoint` (`EdwardsScalar::from_uint_unchecked`,
+# deliberately unreduced per RFC 7748), so an upstream change in those semantics
+# is a silent correctness risk. Bump deliberately and re-run the X448 KAT.
+ed448-goldilocks = { version = "=0.14.0-pre.15", default-features = false }
 p256             = { version = "0.14", default-features = false, features = ["arithmetic", "ecdh"] }
 p384             = { version = "0.14", default-features = false, features = ["arithmetic", "ecdh"] }
 p521             = { version = "0.14", default-features = false, features = ["arithmetic", "ecdh"] }
@@ -41,8 +50,15 @@ default = ["std"]
 std     = ["subtle/std"]
 pq      = ["dep:ml-kem", "dep:x-wing", "dep:shake"]
 comparative = ["pq"]
+# TEST HARNESSES ONLY. These expose internal key-schedule state and are refused
+# at compile time unless the build also sets RUSTFLAGS="--cfg hpke_ng_hazmat"
+# (or HPKE_NG_HAZMAT=1). See `_HAZMAT_REQUIRES_EXPLICIT_OPT_IN` in src/lib.rs for
+# why a Cargo feature alone is not a safe gate for this.
 hazmat-differential  = []
 hazmat-kat-internals = []
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(hpke_ng_hazmat)'] }
 
 [dev-dependencies]
 hpke-rs             = { version = "0.7", features = ["std", "rustcrypto", "hpke-test", "hpke-test-prng", "hazmat"] }

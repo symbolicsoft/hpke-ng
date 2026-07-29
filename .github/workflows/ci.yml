@@ -44,14 +44,25 @@ jobs:
       - name: cargo clippy (no-default-features)
         run: cargo clippy --lib --no-default-features -- -D warnings
       - name: cargo clippy (all features)
+        env:
+          RUSTFLAGS: --cfg hpke_ng_hazmat
+          HPKE_NG_HAZMAT: "1"
         run: cargo clippy --all-targets --features pq,hazmat-kat-internals,hazmat-differential -- -D warnings
       - name: cargo test
         run: cargo test
       - name: cargo test (pq)
         run: cargo test --features pq
       - name: cargo test (pq + hazmat-kat-internals)
+        env:
+          RUSTFLAGS: --cfg hpke_ng_hazmat
+          # `trybuild` (the compile_fail suite) strips RUSTFLAGS from its
+          # sub-build, so the env-var form of the opt-in is needed as well.
+          HPKE_NG_HAZMAT: "1"
         run: cargo test --features pq,hazmat-kat-internals
       - name: cargo test (pq + both hazmat features)
+        env:
+          RUSTFLAGS: --cfg hpke_ng_hazmat
+          HPKE_NG_HAZMAT: "1"
         run: cargo test --features pq,hazmat-differential,hazmat-kat-internals
       - name: cargo build --release
         run: cargo build --release
@@ -118,6 +129,11 @@ jobs:
         with:
           tool: cargo-fuzz
       - name: cargo fuzz run ${{ matrix.target }}
+        # The fuzz crate depends on hpke-ng with `hazmat-kat-internals`; the
+        # second opt-in has to be present or the build is refused. cargo-fuzz
+        # appends its own flags to whatever RUSTFLAGS it inherits.
+        env:
+          RUSTFLAGS: --cfg hpke_ng_hazmat
         run: |
           host=$(rustc -vV | awk '/^host/ { print $2 }')
           cargo fuzz run --target "$host" ${{ matrix.target }} -- -max_total_time=60 -rss_limit_mb=4096

@@ -342,6 +342,37 @@ fn failed_open_preserves_sequence_and_replay_is_rejected() {
 	assert_eq!(receiver.open(b"aad", &ct1).unwrap(), b"m1");
 }
 
+/// RFC 9180 §7.3.1 recommends rekeying long before the `u64::MAX` bound that
+/// `seal` enforces, but the safe threshold is deployment-specific. The counter
+/// must therefore be readable from a *production* build — behind no `hazmat-`
+/// feature — or an application has no way to implement a limit of its own.
+#[test]
+fn sequence_number_is_observable_without_hazmat_features() {
+	type Suite = Hpke<DhKemX25519HkdfSha256, HkdfSha256, ChaCha20Poly1305>;
+	let mut os_rng = OsRng;
+	let mut rng = UnwrapErr(&mut os_rng);
+	let (sk_r, pk_r) = DhKemX25519HkdfSha256::generate(&mut rng).unwrap();
+
+	let (enc, mut sender) = Suite::setup_sender_base(&mut rng, &pk_r, b"info").unwrap();
+	let mut receiver = Suite::setup_receiver_base(&enc, &sk_r, b"info").unwrap();
+
+	assert_eq!(sender.sequence_number(), 0);
+	assert_eq!(receiver.sequence_number(), 0);
+
+	let ct = sender.seal(b"aad", b"m0").unwrap();
+	assert_eq!(sender.sequence_number(), 1, "seal must advance the counter");
+
+	// A failed open must not advance it; a successful one must.
+	assert!(receiver.open(b"aad", b"not a ciphertext").is_err());
+	assert_eq!(
+		receiver.sequence_number(),
+		0,
+		"failed open advanced the counter"
+	);
+	receiver.open(b"aad", &ct).unwrap();
+	assert_eq!(receiver.sequence_number(), 1);
+}
+
 /// A sender context and a receiver context derive the same `(key, base_nonce)`,
 /// so ciphertexts must not be interchangeable across a *reused* sender: two
 /// seals at the same sequence number would reuse a nonce. `Context` is not

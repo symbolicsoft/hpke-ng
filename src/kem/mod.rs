@@ -56,6 +56,24 @@ pub trait Kem: Sealed {
 
 	/// `DeriveKeyPair(ikm)` — RFC 9180 §7.1.3 for the DHKEMs,
 	/// draft-ietf-hpke-pq §3.2/§4.2 for the post-quantum KEMs.
+	///
+	/// # Security
+	///
+	/// `ikm` MUST carry at least [`PRIVATE_KEY_LEN`](Self::PRIVATE_KEY_LEN)
+	/// bytes of entropy and MUST come from a CSPRNG or an equivalently strong
+	/// source. The derivation is fully deterministic, so a guessable `ikm`
+	/// yields a guessable private key: `derive_key_pair(b"")` and
+	/// `derive_key_pair(b"password")` both succeed and both produce a key pair
+	/// any attacker can reproduce.
+	///
+	/// Entropy is not observable, so — unlike [`Psk::new`](crate::Psk::new),
+	/// where a length floor is a usable proxy — no check is enforced here: the
+	/// RFC's KAT vectors and the PQ drafts both admit short `ikm`, and a length
+	/// floor would reject conformant input while still admitting a long
+	/// low-entropy string. Prefer [`generate`](Self::generate) unless you
+	/// specifically need deterministic key derivation, and never derive from a
+	/// password without first running it through a slow password-hashing KDF
+	/// such as Argon2.
 	fn derive_key_pair(ikm: &[u8]) -> Result<(Self::PrivateKey, Self::PublicKey), HpkeError>;
 
 	/// Encapsulate a shared secret to a recipient public key.
