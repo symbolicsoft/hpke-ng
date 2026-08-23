@@ -5,7 +5,7 @@
 
 A clean-slate Rust implementation of [HPKE (RFC 9180)](https://www.rfc-editor.org/rfc/rfc9180.html) with type-driven ciphersuite selection.
 
-> Read the announcement: **[hpke-ng: Faster, Smaller, Harder HPKE for Rust](https://symbolic.software/blog/2026-05-08-hpke-ng/)** — for the full design rationale, benchmarks, and migration notes.
+> Full design rationale, benchmarks and migration notes are in the announcement post: **[hpke-ng: Faster, Smaller, Harder HPKE for Rust](https://symbolic.software/blog/2026-05-08-hpke-ng/)**.
 
 ```rust
 use hpke_ng::*;
@@ -25,19 +25,19 @@ assert_eq!(pt, b"hello");
 
 ## Why a new HPKE crate?
 
-`hpke-ng` exists because three friction points in the existing Rust HPKE story kept producing real bugs and real overhead:
+`hpke-ng` exists because three friction points in the existing Rust HPKE crates kept producing bugs and overhead:
 
-1. **Provider abstraction overhead.** A trait-based pluggable backend pushes dispatch costs into hot paths and inflates the `Hpke` struct to hundreds of bytes — for a value the type system already knows.
+1. **Provider abstraction overhead.** A trait-based pluggable backend pushes dispatch costs into hot paths and inflates the `Hpke` struct to hundreds of bytes, all for a value the type system already knows.
 2. **Struct-owned PRNG hazard.** When the `Hpke` instance owns its RNG, cloning silently aliases randomness state. The fix is structural: don't own it.
 3. **Type-system gaps.** `Option<&[u8]>` for mode-specific parameters turns missing-PSK and wrong-mode into runtime errors that should be compile errors.
 
-The design takes one position on each: **no provider abstraction, no owned RNG, type parameters instead of mode enums.** The math is a solved problem; the surrounding library is where the engineering still has slack.
+The design takes one position on each: no provider abstraction, no owned RNG, type parameters instead of mode enums. The math is a solved problem; the surrounding library is where the engineering still has slack.
 
 ## Design highlights
 
 - **Type-parameterized API.** `Hpke<K, F, A>` is zero-sized; the ciphersuite lives in the type system. Mismatched primitives are compile errors.
-- **Four explicit methods per mode.** `seal_base`, `seal_psk`, `seal_auth`, `seal_auth_psk` — no `Option<&[u8]>` parameters for required-by-mode arguments.
-- **Validated PSK bundle.** PSK modes take a single `Psk`, built by `Psk::new(secret, id)`, which enforces the RFC 9180 32-byte minimum up front. The PSK and its identifier — one secret, one usually public — cannot be transposed at a call site.
+- **Four explicit methods per mode.** `seal_base`, `seal_psk`, `seal_auth`, `seal_auth_psk`, with no `Option<&[u8]>` parameters for required-by-mode arguments.
+- **Validated PSK bundle.** PSK modes take a single `Psk`, built by `Psk::new(secret, id)`, which enforces the RFC 9180 32-byte minimum up front. The PSK and its identifier (one secret, one usually public) cannot be transposed at a call site.
 - **Auth restricted to DHKEMs at the type level.** `Hpke::<XWingDraft06, ...>::seal_auth(...)` does not compile.
 - **Export-only restricted at the type level.** `Hpke::<_, _, ExportOnly>::seal_base(...)` does not compile; only `*_export*` methods are available.
 - **Type-tagged keys.** Private keys carry their KEM in their type, so passing a `DhKemP256` key into an X25519 suite is rejected by the compiler, not at runtime.
@@ -80,7 +80,7 @@ The design takes one position on each: **no provider abstraction, no owned RNG, 
 
 ### Where the KEM wins come from
 
-Most of the speedup traces to two pieces of caching. On the **decapsulation** path, `hpke-ng` stores the expanded FIPS 203 decapsulation key directly in the `PrivateKey`, whereas `hpke-rs` rebuilds it from the seed on every `setup_receiver`. For **classical KEMs**, caching the recipient's serialized public key alongside the secret removes a redundant base-point scalar multiplication on every decap.
+Most of the speedup traces to two pieces of caching. On the decapsulation path, `hpke-ng` stores the expanded FIPS 203 decapsulation key directly in the `PrivateKey`, whereas `hpke-rs` rebuilds it from the seed on every `setup_receiver`. For classical KEMs, caching the recipient's serialized public key alongside the secret removes a redundant base-point scalar multiplication on every decap.
 
 | Operation                 | vs `hpke-rs`        | vs `rust-hpke`     |
 |---------------------------|---------------------|--------------------|
@@ -119,10 +119,10 @@ Export is the largest sustained advantage over `hpke-rs`. For bulk AEAD the per-
 
 **Notes on the table above:**
 
-- `rust-hpke` has no typed configuration handle — it uses free `setup_sender` / `setup_receiver` functions rather than a struct like `Hpke<K, F, A>`, so that row is n/a. Its context types are `AeadCtxS<A, Kdf, Kem>` (sender) and `AeadCtxR<A, Kdf, Kem>` (receiver), measured here as `AeadCtxS` with `X25519HkdfSha256` + `HkdfSha256`.
-- Context size grows by `Nh` bytes with a larger KDF — e.g. +32 bytes for `HkdfSha512`.
+- `rust-hpke` has no typed configuration handle; it uses free `setup_sender` / `setup_receiver` functions rather than a struct like `Hpke<K, F, A>`, so that row is n/a. Its context types are `AeadCtxS<A, Kdf, Kem>` (sender) and `AeadCtxR<A, Kdf, Kem>` (receiver), measured here as `AeadCtxS` with `X25519HkdfSha256` + `HkdfSha256`.
+- A larger KDF grows the context by `Nh` bytes, e.g. +32 bytes for `HkdfSha512`.
 - `ExportOnly` maps to `rust-hpke`'s `ExportOnlyAead`. It is larger there (184 B vs 56 B) because `rust-hpke`'s `AeadCtx` always reserves space for a full nonce buffer regardless of the AEAD variant.
-- The AES-GCM `Context` rows are larger in `hpke-ng` than in `hpke-rs` because the expanded round keys + GHash table are cached inline — which is exactly what eliminates the per-call AES key-schedule cost in `Context::seal`. AES-GCM streaming trades memory for throughput; `ChaCha20-Poly1305` is unaffected.
+- The AES-GCM `Context` rows are larger in `hpke-ng` than in `hpke-rs` because the expanded round keys + GHash table are cached inline, which eliminates the per-call AES key-schedule cost in `Context::seal`. AES-GCM streaming trades memory for throughput; `ChaCha20-Poly1305` is unaffected.
 
 ### Reproducing the benchmarks
 
@@ -132,16 +132,14 @@ Build with `RUSTFLAGS="-C target-cpu=native"` to pick up AES-NI / SHA-NI where a
 cargo bench --features comparative --bench comparative
 ```
 
-This loads both `hpke-rs` (with its `experimental` feature, so the post-quantum KEM stubs are wired up) and `rust-hpke` 0.14 (whose X-Wing support the comparison needs) as dev-dependencies, and emits side-by-side criterion results for every supported ciphersuite. KEM-op rows for `hpke-rs` and `rust-hpke` carry a `_via_setup_*` suffix: neither library exposes raw `encap` / `decap` separable from setup, so those rows are explicitly *not* apples-to-apples with `hpke-ng`'s bare-operation rows.
+This loads both `hpke-rs` (with its `experimental` feature, so the post-quantum KEM stubs are wired up) and `rust-hpke` 0.14 (whose X-Wing support the comparison needs) as dev-dependencies, and emits side-by-side criterion results for every supported ciphersuite. KEM-op rows for `hpke-rs` and `rust-hpke` carry a `_via_setup_*` suffix: neither library exposes raw `encap` / `decap` separable from setup, so those rows are *not* apples-to-apples with `hpke-ng`'s bare-operation rows.
 
 ## Security posture
 
 The library responds to two classes of issue observed in prior implementations:
 
-- **Zero shared-secret check (RFC 9180 §7.1.4).** Enforced for every DH group — X25519, X448 and the four prime-order curves — with `subtle::ConstantTimeEq`. It is unreachable on the prime-order curves given a validated public key and a non-zero scalar; it is kept there as defense in depth and for parity.
+- **Zero shared-secret check (RFC 9180 §7.1.4).** Enforced with `subtle::ConstantTimeEq` for every DH group: X25519, X448 and the four prime-order curves. It is unreachable on the prime-order curves given a validated public key and a non-zero scalar; it is kept there as defense in depth and for parity.
 - **Nonce counter wraparound.** Prevented structurally: `Context` uses a `u64` sequence number, refuses to encrypt at `u64::MAX`, and is non-cloneable so a counter cannot fork.
-
-The post-DH all-zeros check is constant-time. `Context` cannot be `Clone`d, so two ciphertexts cannot be produced under the same `(key, nonce)` from two copies of the same context.
 
 ## Constant-time considerations
 
@@ -160,7 +158,7 @@ This crate composes RustCrypto primitives. Constant-time properties are inherite
 
 Everything this crate controls is scrubbed: private keys, shared secrets, PRKs, candidate scalars, seeds, and the derived AEAD key and base nonce are held in `Zeroizing`/`ZeroizeOnDrop` wrappers, with explicit manual scrubbing wherever an upstream type lacks zeroize-on-drop (the X448 scalar and shared-secret point, `GenericArray` temporaries from `SecretKey::to_bytes` and `HkdfExtract::finalize`, and the ML-KEM/X-Wing shared-secret arrays).
 
-**Known limitation — HKDF/HMAC internal state.** The RustCrypto `hkdf`/`hmac` crates do not zeroize their internal HMAC state on drop. Every HKDF extract/expand operation therefore leaves PRK-derived ipad/opad block state transiently in freed memory. This is key-equivalent material: an attacker who can read process memory (core dumps, swap, a same-process memory-disclosure bug) could recover it while the allocation remains unreused. The limitation is shared by every RustCrypto-based HPKE implementation and cannot be fixed from this crate. Deployments with a strong memory-forensics threat model should disable core dumps and swap (or use encrypted swap) for processes holding HPKE keys.
+**Known limitation: HKDF/HMAC internal state.** The RustCrypto `hkdf`/`hmac` crates do not zeroize their internal HMAC state on drop. Every HKDF extract/expand operation therefore leaves PRK-derived ipad/opad block state transiently in freed memory. This is key-equivalent material: an attacker who can read process memory (core dumps, swap, a same-process memory-disclosure bug) could recover it while the allocation remains unreused. The limitation is shared by every RustCrypto-based HPKE implementation and cannot be fixed from this crate. Deployments with a strong memory-forensics threat model should disable core dumps and swap (or use encrypted swap) for processes holding HPKE keys.
 
 ## Testing
 
@@ -192,11 +190,11 @@ The full suite (without the `hpke-rs` differential) runs in under two seconds.
 
 ## Migration from `hpke-rs`
 
-Three mechanical steps, typically under an hour for a real codebase:
+Three mechanical steps:
 
 1. Define a `type Suite = Hpke<K, F, A>;` alias for the ciphersuite you use.
 2. Replace `hpke.seal(...)` calls with the explicit mode method: `Suite::seal_base`, `seal_psk`, `seal_auth`, or `seal_auth_psk`.
-3. Thread `&mut rng` through call sites — the configuration no longer owns one.
+3. Thread `&mut rng` through call sites; the configuration no longer owns one.
 
 See the [announcement post](https://symbolic.software/blog/2026-05-08-hpke-ng/) for a worked example.
 
